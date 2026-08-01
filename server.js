@@ -469,7 +469,8 @@ const server = http.createServer(async (req, res) => {
             const filePath = path.join(PUBLIC_DIR, path.normalize(rel).replace(/^([/\\])+/, ''));
             if (filePath.startsWith(PUBLIC_DIR) && fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
                 const mime = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
-                res.writeHead(200, { 'Content-Type': mime });
+                // no-cache: always revalidate so frontend fixes (e.g. app.js) reach users promptly
+                res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
                 if (method === 'HEAD') return res.end();
                 return fs.createReadStream(filePath).pipe(res);
             }

@@ -87,6 +87,9 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 路径安全：`safeName()` 清洗文件名，拒绝 `..` / 目录穿越
 - `/videos` 随机顺序：Fisher–Yates 洗牌，每次调用返回不同顺序
 - 简单上传流式化：`req.pipe(ws)` 后必须等 `ws.on('finish')` 再 `rename`，否则 rename/stat 会与写盘竞态（WSL2 overlayfs 上表现为 500 ENOENT）
+- 前端 sha256：`crypto.subtle` 仅 HTTPS/localhost 可用，LAN IP + HTTP 下为 undefined；
+  `public/app.js` 内置纯 JS `sha256Hex()` 回退（填充长度公式 `((msgLen + 72) >> 6) << 6`）
+- 静态资源响应加 `Cache-Control: no-cache`，前端修复能及时被浏览器拉取
 - 前端 scroll-snap + IntersectionObserver 控制视频播放/暂停
 
 ### 前端三页水平布局（CSS translateX）
@@ -123,7 +126,7 @@ git log --format="%h %s" -1 >> logs/commit.txt
 ## 部署验证清单
 
 - [ ] `/health` → OK
-- [ ] `/` 返回前端页面，`/style.css`、`/app.js` 200
+- [ ] `/` 返回前端页面，`/style.css`、`/app.js` 200 且响应带 `Cache-Control: no-cache`
 - [ ] `POST /upload/init` + 分片 + `POST /upload/complete` 成功，sha256 一致
 - [ ] 同名同 hash 再上传 → `skip:true`
 - [ ] `PUT /upload/:filename` 简单流式上传 → 200 `{ok,url}`（勿出现 500 ENOENT）
