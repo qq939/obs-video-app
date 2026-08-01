@@ -52,9 +52,9 @@ html, body {
 .feed::-webkit-scrollbar { display: none; }
 
 /* On pages with a side panel, keep the video feed clear of the panel.
-   Page 0's info panel is on the RIGHT; page 2's settings panel is mirrored to the LEFT. */
-.page[data-active="0"] .feed { right: min(300px, 78vw); }
-.page[data-active="2"] .feed { left: min(300px, 78vw); }
+   Page 0's info panel is on the LEFT; page 2's settings panel is mirrored to the RIGHT. */
+.page[data-active="0"] .feed { left: min(300px, 78vw); }
+.page[data-active="2"] .feed { right: min(300px, 78vw); }
 
 .video-item {
     position: relative;
@@ -150,15 +150,15 @@ html, body {
     transition: transform .35s cubic-bezier(.4,0,.2,1);
 }
 .page[data-active="1"] .side-panel { transform: translateX(105%); }
-.page[data-active="0"] .side-panel { transform: translateX(0); }
-/* page 2's settings panel mirrors page 0's info panel: anchored to the LEFT edge */
-.page[data-active="2"] .side-panel {
+/* page 0's info panel mirrors page 2's settings panel: anchored to the LEFT edge */
+.page[data-active="0"] .side-panel {
     right: auto;
     left: 0;
     border-left: none;
     border-right: 1px solid rgba(255,255,255,.08);
     transform: translateX(0);
 }
+.page[data-active="2"] .side-panel { transform: translateX(0); }
 
 .panel-head {
     padding: 18px 16px 12px;
@@ -260,9 +260,11 @@ html, body {
 .page-dot span.on { background: #fff; width: 16px; }
 
 /* ---------------- upload button ---------------- */
+/* FAB lives on page 2 (settings), whose panel occupies the right edge, so it
+   sits at the bottom-left to stay clear of the panel. */
 .upload-btn {
     position: absolute;
-    right: 18px;
+    left: 18px;
     bottom: calc(28px + env(safe-area-inset-bottom));
     z-index: 20;
     width: 58px;

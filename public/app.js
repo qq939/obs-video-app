@@ -3,6 +3,12 @@
 
     const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk
     const PAGE_COUNT = 3;
+    // Each feed renders this many copies of the video list. The middle copy is
+    // the "real" one; the leading/trailing ghost copies make up/down scrolling
+    // endless by letting the user scroll one list-length past either end before
+    // an invisible jump back to the middle copy (same real video, no visual
+    // change). More copies would smooth very long flicks but cost DOM memory.
+    const FEED_COPIES = 3;
 
     // ---------------------------------------------------------------- DOM refs
     const pagesEl = document.getElementById('pages');
@@ -35,19 +41,18 @@
     // ---------------------------------------------------------------- state
     let videos = [];
     let activeIndex = 0;
-    let currentPage = 1;          // 0 = info panel, 1 = main feed, 2 = settings
+    let currentPage = 1;          // 0 = info, 1 = main feed, 2 = settings
     let playing = true;           // global play/pause
     let random = true;            // random switch (default on)
     let autoplay = true;          // autoplay switch (default on)
     let userInteracted = false;   // has the user tapped/clicked yet (for sound)
-    let suppressScroll = false;   // guard against programmatic-scroll feedback
     let currentAbort = null;      // active upload AbortController
 
     const EMPTY_HTML =
         '<div class="empty-state">' +
         '<div class="empty-icon">🎬</div>' +
         '<p>还没有视频</p>' +
-        '<p class="sub">右滑到设置页点击 + 上传</p>' +
+        '<p class="sub">左滑到设置页点击 + 上传</p>' +
         '</div>';
 
     // ---------------------------------------------------------------- utils
@@ -81,40 +86,30 @@
     // Pure-JS SHA-256 fallback. WebCrypto (crypto.subtle) is only available in
     // secure contexts (HTTPS or localhost); when the app is reached via a LAN
     // IP over plain HTTP, crypto.subtle is undefined, so we fall back to this.
-    function sha256Hex(bytes) {
-        const rotr = (x, n) => (x >>> n) | (x << (32 - n));
-        const K = [
-            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-        ];
-        const H0 = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-        const msgLen = bytes.length;
-        const bitLenHi = Math.floor(msgLen / 0x20000000);
-        const bitLenLo = (msgLen << 3) >>> 0;
-        const paddedLen = ((msgLen + 72) >> 6) << 6;   // msgLen + 0x80 + 8-byte length, rounded up to 64
-        const padded = new Uint8Array(paddedLen);
-        padded.set(bytes);
-        padded[msgLen] = 0x80;
-        padded[paddedLen - 8] = (bitLenHi >>> 24) & 0xff;
-        padded[paddedLen - 7] = (bitLenHi >>> 16) & 0xff;
-        padded[paddedLen - 6] = (bitLenHi >>> 8) & 0xff;
-        padded[paddedLen - 5] = bitLenHi & 0xff;
-        padded[paddedLen - 4] = (bitLenLo >>> 24) & 0xff;
-        padded[paddedLen - 3] = (bitLenLo >>> 16) & 0xff;
-        padded[paddedLen - 2] = (bitLenLo >>> 8) & 0xff;
-        padded[paddedLen - 1] = bitLenLo & 0xff;
+    const SHA256_K = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+    ];
+    const SHA256_H0 = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
 
-        const w = new Uint32Array(64);
-        const h = H0.slice();
-        for (let i = 0; i < paddedLen; i += 64) {
+    // Streaming SHA-256 context: lets us hash a large file in slices (8MB at a
+    // time) instead of loading the whole file into memory, and report progress.
+    function createSha256() {
+        const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+        const h = SHA256_H0.slice();
+        let buf = new Uint8Array(0);   // leftover partial block (< 64 bytes)
+        let totalLen = 0;
+
+        function compress(padded, offset) {
+            const w = new Uint32Array(64);
             for (let j = 0; j < 16; j++) {
-                const o = i + j * 4;
+                const o = offset + j * 4;
                 w[j] = (padded[o] << 24) | (padded[o + 1] << 16) | (padded[o + 2] << 8) | padded[o + 3];
             }
             for (let j = 16; j < 64; j++) {
@@ -126,7 +121,7 @@
             for (let j = 0; j < 64; j++) {
                 const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
                 const ch = (e & f) ^ (~e & g);
-                const t1 = (hh + S1 + ch + K[j] + w[j]) | 0;
+                const t1 = (hh + S1 + ch + SHA256_K[j] + w[j]) | 0;
                 const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
                 const maj = (a & b) ^ (a & c) ^ (b & c);
                 const t2 = (S0 + maj) | 0;
@@ -135,14 +130,56 @@
             h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
             h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + hh) | 0;
         }
-        let hex = '';
-        for (let i = 0; i < 8; i++) {
-            hex += (h[i] >>> 28 & 0xf).toString(16) + (h[i] >>> 24 & 0xf).toString(16) +
-                (h[i] >>> 20 & 0xf).toString(16) + (h[i] >>> 16 & 0xf).toString(16) +
-                (h[i] >>> 12 & 0xf).toString(16) + (h[i] >>> 8 & 0xf).toString(16) +
-                (h[i] >>> 4 & 0xf).toString(16) + (h[i] & 0xf).toString(16);
-        }
-        return hex;
+
+        return {
+            update(chunk) {
+                totalLen += chunk.length;
+                if (buf.length > 0) {
+                    const combined = new Uint8Array(buf.length + chunk.length);
+                    combined.set(buf);
+                    combined.set(chunk, buf.length);
+                    buf = combined;
+                } else {
+                    buf = chunk;
+                }
+                const fullLen = Math.floor(buf.length / 64) * 64;
+                for (let i = 0; i < fullLen; i += 64) compress(buf, i);
+                buf = buf.slice(fullLen);
+            },
+            digestHex() {
+                const bitLen = totalLen * 8;
+                const bitLenHi = Math.floor(bitLen / 0x100000000);
+                const bitLenLo = bitLen >>> 0;
+                const rem = buf.length;
+                const padLen = rem < 56 ? 64 - rem : 128 - rem;
+                const padded = new Uint8Array(rem + padLen);
+                padded.set(buf);
+                padded[rem] = 0x80;
+                padded[padded.length - 8] = (bitLenHi >>> 24) & 0xff;
+                padded[padded.length - 7] = (bitLenHi >>> 16) & 0xff;
+                padded[padded.length - 6] = (bitLenHi >>> 8) & 0xff;
+                padded[padded.length - 5] = bitLenHi & 0xff;
+                padded[padded.length - 4] = (bitLenLo >>> 24) & 0xff;
+                padded[padded.length - 3] = (bitLenLo >>> 16) & 0xff;
+                padded[padded.length - 2] = (bitLenLo >>> 8) & 0xff;
+                padded[padded.length - 1] = bitLenLo & 0xff;
+                for (let i = 0; i < padded.length; i += 64) compress(padded, i);
+                let hex = '';
+                for (let i = 0; i < 8; i++) {
+                    hex += (h[i] >>> 28 & 0xf).toString(16) + (h[i] >>> 24 & 0xf).toString(16) +
+                        (h[i] >>> 20 & 0xf).toString(16) + (h[i] >>> 16 & 0xf).toString(16) +
+                        (h[i] >>> 12 & 0xf).toString(16) + (h[i] >>> 8 & 0xf).toString(16) +
+                        (h[i] >>> 4 & 0xf).toString(16) + (h[i] & 0xf).toString(16);
+                }
+                return hex;
+            }
+        };
+    }
+
+    function sha256Hex(bytes) {
+        const ctx = createSha256();
+        ctx.update(bytes);
+        return ctx.digestHex();
     }
 
     async function sha256(buffer) {
@@ -246,7 +283,9 @@
                 feed.innerHTML = EMPTY_HTML;
                 return;
             }
-            videos.forEach((v) => feed.appendChild(createVideoItem(v)));
+            for (let c = 0; c < FEED_COPIES; c++) {
+                videos.forEach((v) => feed.appendChild(createVideoItem(v)));
+            }
         });
 
         activeIndex = Math.max(0, Math.min(activeIndex, Math.max(0, videos.length - 1)));
@@ -266,46 +305,75 @@
     }
 
     // ---------------------------------------------------------------- feed
-    function getFeedIndex(feed) {
-        if (videos.length === 0) return 0;
-        const idx = Math.round(feed.scrollTop / Math.max(1, feed.clientHeight));
-        return Math.max(0, Math.min(videos.length - 1, idx));
-    }
-
+    // The feed scrolls over FEED_COPIES * videos.length items. The middle copy
+    // is at indices [n, 2n). Scroll positions in the ghost copies are mapped
+    // back to the middle so the wrap is invisible (same real video on screen).
     function scrollToIndex(feed, idx) {
-        feed.scrollTop = idx * feed.clientHeight;
+        if (videos.length === 0) { feed.scrollTop = 0; return; }
+        // Mark this feed as programmatically scrolled for a short window so the
+        // scroll event it fires is ignored (only that feed, and only briefly —
+        // a user scrolling the source feed right after must still be handled).
+        feed._progScrollUntil = Date.now() + 60;
+        feed.scrollTop = (videos.length + idx) * feed.clientHeight;
     }
 
     function syncFeeds(sourceFeed) {
-        suppressScroll = true;
         feeds.forEach((f) => {
             if (f !== sourceFeed) scrollToIndex(f, activeIndex);
         });
-        setTimeout(() => { suppressScroll = false; }, 250);
+    }
+
+    // Update activeIndex to a real video index and propagate. Guards against
+    // out-of-range values (e.g. from the empty state) and no-ops if unchanged.
+    function applyIndex(idx, sourceFeed) {
+        idx = Math.max(0, Math.min(videos.length - 1, idx));
+        if (idx === activeIndex) return;
+        activeIndex = idx;
+        playing = autoplay;
+        syncFeeds(sourceFeed);
+        updateInfo();
+        updatePlayback();
     }
 
     feeds.forEach((feed) => {
         feed.addEventListener('scroll', () => {
-            if (suppressScroll || videos.length === 0) return;
+            // Ignore the scroll burst caused by our own scrollToIndex() on this
+            // feed (60ms window). User scrolls of ANY feed are always handled.
+            if (videos.length === 0 || Date.now() < (feed._progScrollUntil || 0)) return;
             clearTimeout(feed._scrollTimer);
             feed._scrollTimer = setTimeout(() => {
-                const idx = getFeedIndex(feed);
-                if (idx !== activeIndex) {
-                    activeIndex = idx;
-                    playing = autoplay;
-                    syncFeeds(feed);
-                    updateInfo();
-                    updatePlayback();
+                const h = Math.max(1, feed.clientHeight);
+                const n = videos.length;
+                let vis = Math.round(feed.scrollTop / h);
+                if (vis < n) {
+                    // Entered the leading ghost copy: jump forward one full list
+                    // to the same real video in the middle copy (no visual jump).
+                    feed._progScrollUntil = Date.now() + 60;
+                    feed.scrollTop = (vis + n) * h;
+                    applyIndex(vis, feed);              // real index = vis
+                    return;
                 }
+                if (vis >= 2 * n) {
+                    // Entered the trailing ghost copy: jump back one full list.
+                    feed._progScrollUntil = Date.now() + 60;
+                    feed.scrollTop = (vis - n) * h;
+                    applyIndex(vis - 2 * n, feed);      // real index = vis - 2n
+                    return;
+                }
+                applyIndex(vis - n, feed);              // middle copy
             }, 120);
         });
     });
 
     // ---------------------------------------------------------------- playback
+    // Control the active video in the middle copy of each feed. The ghost
+    // copies are only on screen during a wrap transition (a brief moment while
+    // scrolling through them), so the middle copy is the canonical one; the
+    // 500ms sync below keeps every feed's middle copy aligned in time.
     function updatePlayback() {
         if (videos.length === 0) return;
         feeds.forEach((feed, pi) => {
-            const item = feed.children[activeIndex];
+            const item = feed.children[videos.length + activeIndex];
             if (!item) return;
             const video = item.querySelector('video');
             if (!video) return;
@@ -320,12 +388,12 @@
         });
     }
 
-    // Keep the three copies of the active video aligned in time.
+    // Keep the three feeds' copies of the active video aligned in time.
     setInterval(() => {
         if (videos.length === 0) return;
         const leaderFeed = feeds[currentPage];
         if (!leaderFeed) return;
-        const leaderItem = leaderFeed.children[activeIndex];
+        const leaderItem = leaderFeed.children[videos.length + activeIndex];
         if (!leaderItem) return;
         const leader = leaderItem.querySelector('video');
         if (!leader) return;
@@ -336,7 +404,7 @@
 
         feeds.forEach((feed, pi) => {
             if (pi === currentPage) return;
-            const item = feed.children[activeIndex];
+            const item = feed.children[videos.length + activeIndex];
             if (!item) return;
             const v = item.querySelector('video');
             if (!v) return;
@@ -389,6 +457,27 @@
     let swipeStartX = 0;
     let swipeStartY = 0;
     let swipeMoved = false;
+    const SWIPE_THRESHOLD = 50;   // px of horizontal travel needed to change page
+    const DRAG_START = 8;         // px of horizontal travel before drag-follow kicks in
+
+    // Convert a finger delta into a translateX offset for .pages. When there is
+    // no page in the dragged direction (edge), apply resistance so the content
+    // does not fly off screen.
+    function dragOffset(dx) {
+        if ((dx < 0 && currentPage < PAGE_COUNT - 1) || (dx > 0 && currentPage > 0)) return dx;
+        return dx / 3;
+    }
+
+    // Live drag-follow: while the finger moves, the pages container tracks it
+    // 1:1. The CSS transition is disabled during the drag so there is no lag,
+    // then re-enabled on release so the snap animation starts from the exact
+    // on-screen position.
+    function beginDrag(dx) {
+        swipeMoved = true;
+        pagesEl.style.transition = 'none';
+        pagesEl.style.transform =
+            'translateX(calc(-1 * var(--page) * (100% / 3) + ' + dragOffset(dx) + 'px))';
+    }
 
     function handleTap(e) {
         userInteracted = true;
@@ -401,11 +490,14 @@
         const item = target.closest('.video-item');
         if (!item) return;
         const feed = item.parentNode;
-        const idx = Array.prototype.indexOf.call(feed.children, item);
+        // The feed contains FEED_COPIES copies; map the DOM index to the real
+        // video index so taps work whichever copy the item lives in.
+        const domIdx = Array.prototype.indexOf.call(feed.children, item);
+        const idx = videos.length ? domIdx % videos.length : domIdx;
         if (currentPage !== 1) {
-            // On a side-panel page (0=info, 2=settings) the video only fills the
-            // left half; tapping it returns to the middle pure-feed page and
-            // resumes playback.
+            // On a side-panel page (0=info, 2=settings) the video only fills a
+            // partial width; tapping it returns to the middle pure-feed page
+            // and resumes playback.
             playing = true;
             if (idx !== activeIndex) {
                 activeIndex = idx;
@@ -424,10 +516,23 @@
         if (!swipeMoved) return false;   // treat as a tap
         const dx = endX - swipeStartX;
         const dy = endY - swipeStartY;
-        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
-            if (dx < 0) setPage(currentPage - 1);   // swipe left -> previous page (info)
-            else setPage(currentPage + 1);          // swipe right -> next page (settings)
+        let target = currentPage;
+        if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > SWIPE_THRESHOLD) {
+            // Standard drag-follow: content moves with the finger.
+            // Left  -> next page (page 1 -> page 2 = settings)
+            // Right -> previous page (page 1 -> page 0 = info)
+            target = Math.max(0, Math.min(PAGE_COUNT - 1, dx < 0 ? currentPage + 1 : currentPage - 1));
         }
+        // Re-enable the CSS transition, update the page base, then drop the
+        // live drag offset so the element animates to the target page.
+        pagesEl.style.transition = '';
+        if (target !== currentPage) {
+            currentPage = target;
+            pagesEl.style.setProperty('--page', target);
+            buildPageDots();
+            updatePlayback();
+        }
+        pagesEl.style.transform = '';
         return true;
     }
 
@@ -442,7 +547,8 @@
         const t = e.touches[0];
         const dx = t.clientX - swipeStartX;
         const dy = t.clientY - swipeStartY;
-        if (Math.abs(dx) > 12 || Math.abs(dy) > 12) swipeMoved = true;
+        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) beginDrag(dx);
+        else if (Math.abs(dy) > 12) swipeMoved = true;   // vertical scroll: not a tap
     }, { passive: true });
 
     viewport.addEventListener('touchend', (e) => {
@@ -463,7 +569,8 @@
         if (!mouseDown) return;
         const dx = e.clientX - swipeStartX;
         const dy = e.clientY - swipeStartY;
-        if (Math.abs(dx) > 12 || Math.abs(dy) > 12) swipeMoved = true;
+        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) beginDrag(dx);
+        else if (Math.abs(dy) > 12) swipeMoved = true;
     });
     viewport.addEventListener('mouseup', (e) => {
         if (!mouseDown) return;
@@ -485,9 +592,28 @@
     });
 
     // ---------------------------------------------------------------- upload
-    async function computeFileHash(file) {
-        const buf = await file.arrayBuffer();
-        return sha256(buf);
+    async function computeFileHash(file, onProgress) {
+        // WebCrypto is fast and only needs the whole buffer in secure contexts.
+        if (crypto.subtle) {
+            try {
+                const buf = await file.arrayBuffer();
+                const digest = await crypto.subtle.digest('SHA-256', buf);
+                if (onProgress) onProgress(100);
+                return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, '0')).join('');
+            } catch (e) { /* fall through to pure JS */ }
+        }
+        // Pure-JS streaming hash: slice the file so big videos are not loaded
+        // into memory all at once, and report progress so the UI is responsive.
+        const ctx = createSha256();
+        const SLICE = 8 * 1024 * 1024;
+        let processed = 0;
+        for (let start = 0; start < file.size; start += SLICE) {
+            const buf = await file.slice(start, Math.min(file.size, start + SLICE)).arrayBuffer();
+            ctx.update(new Uint8Array(buf));
+            processed += buf.byteLength;
+            if (onProgress) onProgress(Math.round((processed / file.size) * 100));
+        }
+        return ctx.digestHex();
     }
 
     function setProgress(pct, cur, total) {
@@ -497,8 +623,6 @@
 
     async function uploadFile(file) {
         const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-        const hash = await computeFileHash(file);
-
         const controller = new AbortController();
         currentAbort = controller;
         progressArea.classList.remove('hidden');
@@ -506,6 +630,15 @@
         setProgress(0, 0, totalChunks);
 
         try {
+            // 0. sha256 first (needed for init dedup/resume + server verification).
+            //    Show progress while hashing so a large file does not look frozen.
+            const hash = await computeFileHash(file, (pct) => {
+                progressFill.style.width = pct + '%';
+                progressText.textContent = '计算校验值 ' + pct + '%';
+            });
+            setProgress(0, 0, totalChunks);
+            progressTitle.textContent = file.name;
+
             // 1. init
             const init = await jsonFetch('/upload/init', {
                 method: 'POST',
@@ -527,21 +660,31 @@
                 return;
             }
 
-            // 2. upload missing chunks (resume support)
+            // 2. upload missing chunks in parallel (resume support)
             const done = new Set(init.uploaded || []);
-            for (let i = 0; i < init.totalChunks; i++) {
-                if (done.has(i)) continue;
-                const start = i * init.chunkSize;
-                const end = Math.min(file.size, start + init.chunkSize);
-                const chunk = file.slice(start, end);
-                const res = await fetch(`/upload/chunk/${init.uploadId}/${i}`, {
-                    method: 'PUT',
-                    body: chunk,
-                    signal: controller.signal
-                });
-                if (!res.ok) throw new Error('chunk ' + i + ' failed: HTTP ' + res.status);
-                setProgress(Math.round(((i + 1) / init.totalChunks) * 100), i + 1, init.totalChunks);
+            const total = init.totalChunks;
+            let uploaded = done.size;
+            const CONCURRENCY = 4;
+            let next = 0;
+            async function worker() {
+                while (next < total) {
+                    const i = next++;
+                    if (done.has(i)) continue;
+                    const start = i * init.chunkSize;
+                    const end = Math.min(file.size, start + init.chunkSize);
+                    const chunk = file.slice(start, end);
+                    const res = await fetch(`/upload/chunk/${init.uploadId}/${i}`, {
+                        method: 'PUT',
+                        body: chunk,
+                        signal: controller.signal
+                    });
+                    if (!res.ok) throw new Error('chunk ' + i + ' failed: HTTP ' + res.status);
+                    uploaded++;
+                    setProgress(Math.round((uploaded / total) * 100), uploaded, total);
+                }
             }
+            const nWorkers = Math.min(CONCURRENCY, Math.max(1, total - done.size));
+            await Promise.all(Array.from({ length: nWorkers }, () => worker()));
 
             // 3. complete
             const doneRes = await jsonFetch(`/upload/complete/${init.uploadId}`, {

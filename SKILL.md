@@ -68,6 +68,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 ### 数据目录
 - 视频存储：`obs/`（已加入 `.gitignore`，仅保留 `obs/.gitkeep`）
 - 分片临时目录：`obs/.uploads/`（上传完成后自动清理）
+- **`obs/` 是资产目录**：禁止删除/清空/写入测试文件。测试视频一律放 `/tmp`；测试上传 API 后立即删除测试文件。
 - 前端：`public/`（`index.html` / `style.css` / `app.js`）
 
 ### 上传 API
@@ -107,12 +108,19 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 
 ### 前端三页水平布局（CSS translateX）
 - `#pages` 300% 宽 flex，三页各 1/3，`translateX(calc(-1 * var(--page) * 100% / 3))` 切页
-- 页 0：feed + 播放信息面板；页 1：纯 feed（默认，页点指示器）；页 2：feed + 设置菜单 + `＋` 上传按钮
-- 三页共享同一视频列表；任一 feed 滚动后 `syncFeeds()` 同步其它两页滚动位置（`suppressScroll` 防反馈）
+- 页 0：feed + 播放信息面板；页 1：纯 feed（默认，页点指示器）；页 2：feed + 设置菜单 + `＋` 上传按钮（左下角）
+- 三页共享同一视频列表；任一 feed 滚动后 `syncFeeds()` 同步其它两页滚动位置
 - 每页在当前索引各有一个 `<video>`，以当前页为 leader，每 500ms 同步 `currentTime` 到其它两页（进度同步）
-- 侧面板显隐：JS 静态设置 `pg.dataset.active = pg.dataset.page`，CSS 用 `[data-active="0"/"2"]` 显示面板并收窄 feed
-- 上传弹窗：设置页右下角 `＋` **或设置菜单内 `#uploadPanelBtn`（「＋ 上传视频」）** → `#uploadModal`，支持点击 / 拖拽选择文件，分片进度实时显示
-- **点视频回中间**：在侧面板页（页 0=播放信息 / 页 2=设置）视频只占左半，点击可见视频区域 → `setPage(1)` 回到中间纯 feed 页并恢复播放（`handleTap` 中 `currentPage !== 1` 分支）
+- 侧面板显隐：JS 静态设置 `pg.dataset.active = pg.dataset.page`，CSS 用 `[data-active="0"/"2"]` 显示面板并收窄 feed；面板镜像对称——页 0 播放信息面板在左、页 2 设置面板在右
+- 切页手势：标准拖拽跟随（`dragOffset`），左滑→下一页（到设置页）、右滑→上一页（到信息页）；拖拽时禁用过渡实时跟手，松手恢复过渡并吸附（`finishSwipe`）；边缘（页 0 右滑 / 页 2 左滑）阻力 `dx/3` 防飞出
+- 上传弹窗：设置页左下角 `＋`（`#uploadBtn`）**或设置菜单内 `#uploadPanelBtn`（「＋ 上传视频」）** → `#uploadModal`，支持点击 / 拖拽选择文件，分片进度实时显示
+- **点视频回中间**：在侧面板页（页 0=播放信息 / 页 2=设置）视频只占一侧，点击可见视频区域 → `setPage(1)` 回到中间纯 feed 页并恢复播放（`handleTap` 中 `currentPage !== 1` 分支）
+
+### 纵向无尽头滚动（3 副本 + 隐形回绕）
+- 每个 feed 渲染 `FEED_COPIES=3` 份视频列表（中间份为「真实」位置，`scrollToIndex` 定位到 `n + idx`），上/下滑到首尾都不会卡住，可无限循环
+- 滚动进入前/后 ghost 副本（`vis < n` 或 `vis >= 2n`）时，立即 `scrollTop` 跳回中间份同一真实视频（内容相同，肉眼无跳变），并更新 `activeIndex`
+- 顺序固定：`videos` 数组顺序浏览期间不变，上滑严格逆序回放刚才的视频（历史顺序），回绕后继续同一循环序列
+- 程序化滚动抑制：`scrollToIndex` 给目标 feed 打 `_progScrollUntil`（60ms）时间戳，scroll 处理函数忽略该窗口内的自触发事件；不再用全局 `suppressScroll`，因此用户快速连续滑动源 feed 也能被处理、不会漏掉回绕
 
 ## 日志整理流程
 
