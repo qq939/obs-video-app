@@ -194,6 +194,32 @@
         label.textContent = escapeHtml(v.name) + '  ·  ' + fmtSize(v.size);
         item.appendChild(label);
 
+        const comp = document.createElement('button');
+        comp.className = 'v-compress';
+        comp.textContent = '压缩';
+        comp.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            if (!confirm('压缩 ' + v.name + ' ？\n将转为 H.264/MP4，体积更小、播放更流畅。')) return;
+            comp.disabled = true;
+            comp.textContent = '压缩中…';
+            try {
+                const r = await jsonFetch('/compress/' + encodeURIComponent(v.name), { method: 'POST' });
+                if (r.skipped) {
+                    alert('无需压缩：原视频已经很紧凑（' + fmtSize(r.before) + '）。');
+                } else {
+                    alert('压缩完成：' + fmtSize(r.before) + ' → ' + fmtSize(r.after) +
+                        '，节省 ' + r.savedPct + '%。');
+                }
+                await loadFeed();
+            } catch (err) {
+                alert('压缩失败：' + err.message);
+                comp.disabled = false;
+                comp.textContent = '压缩';
+            }
+        });
+        item.appendChild(comp);
+
         const del = document.createElement('button');
         del.className = 'v-delete';
         del.textContent = '删除';
@@ -368,13 +394,26 @@
         userInteracted = true;
         const target = e.target;
         if (!target || !target.closest) return;
-        if (target.closest('.v-delete') || target.closest('.upload-btn') ||
+        if (target.closest('.v-delete') || target.closest('.v-compress') ||
+            target.closest('.upload-btn') ||
             target.closest('.cancel-btn') || target.closest('.refresh-btn') ||
             target.closest('.modal')) return;
         const item = target.closest('.video-item');
         if (!item) return;
         const feed = item.parentNode;
         const idx = Array.prototype.indexOf.call(feed.children, item);
+        if (currentPage !== 1) {
+            // On a side-panel page (0=info, 2=settings) the video only fills the
+            // left half; tapping it returns to the middle pure-feed page and
+            // resumes playback.
+            playing = true;
+            if (idx !== activeIndex) {
+                activeIndex = idx;
+                syncFeeds(feed);
+            }
+            setPage(1);
+            return;
+        }
         if (idx === activeIndex) {
             playing = !playing;
             updatePlayback();
@@ -386,8 +425,8 @@
         const dx = endX - swipeStartX;
         const dy = endY - swipeStartY;
         if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 50) {
-            if (dx < 0) setPage(currentPage + 1);   // swipe left -> next page
-            else setPage(currentPage - 1);          // swipe right -> previous page
+            if (dx < 0) setPage(currentPage - 1);   // swipe left -> previous page (info)
+            else setPage(currentPage + 1);          // swipe right -> next page (settings)
         }
         return true;
     }
@@ -522,6 +561,19 @@
     async function startUpload(file) {
         try {
             await uploadFile(file);
+            const compressOpt = document.getElementById('compressAfterUpload');
+            if (compressOpt && compressOpt.checked) {
+                progressArea.classList.remove('hidden');
+                progressTitle.textContent = file.name + ' —— 压缩中…';
+                progressFill.style.width = '100%';
+                progressText.textContent = 'H.264 转码';
+                try {
+                    await jsonFetch('/compress/' + encodeURIComponent(file.name), { method: 'POST' });
+                } catch (err) {
+                    console.error('auto-compress failed:', err);
+                }
+                progressArea.classList.add('hidden');
+            }
             await loadFeed();
             closeModal();
         } catch (err) {

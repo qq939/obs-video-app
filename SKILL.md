@@ -80,6 +80,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 | `/obs/:filename` | GET/HEAD | HTTP Range 流式播放（206 / 416） |
 | `/videos` | GET | → `{videos:[{name,size,mtime,url}]}` |
 | `/obs/:filename` | DELETE | 删除视频 → `{ok}` |
+| `/compress/:filename` | POST | ffmpeg 转码压缩为 H.264/AAC MP4（faststart）→ `{ok,skipped,before,after,saved,savedPct}` |
 
 ### 实现要点
 - 分片大小前端 2MB，`/upload/init` 可自定义 `chunkSize`
@@ -91,6 +92,18 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   `public/app.js` 内置纯 JS `sha256Hex()` 回退（填充长度公式 `((msgLen + 72) >> 6) << 6`）
 - 静态资源响应加 `Cache-Control: no-cache`，前端修复能及时被浏览器拉取
 - 前端 scroll-snap + IntersectionObserver 控制视频播放/暂停
+
+### 视频压缩（/compress/:filename，ffmpeg）
+- 环境已安装 ffmpeg 5.1（`/usr/bin/ffmpeg`），`server.js` 用 `child_process.spawn` 调用，无 npm 依赖
+- 压缩参数（同 YouTube/抖音的浏览器兼容思路）：
+  - `-c:v libx264 -crf 23 -preset medium`：H.264 编码，CRF 23 质量/体积平衡
+  - `-pix_fmt yuv420p`：浏览器兼容像素格式
+  - `-vf scale='min(1920,iw)':-2`：宽度上限 1920，高度按比例取偶数
+  - `-c:a aac -b:a 128k`：AAC 音频
+  - `-movflags +faststart`：moov 移到文件头，浏览器秒开（渐进播放关键）
+- 压缩到 `obs/.uploads/.comp-*.mp4` 临时文件，成功且更小才 `rename` 覆盖原文件；若输出 ≥ 原文件则保留原文件并返回 `skipped:true`
+- 前端：每个视频卡片有「压缩」按钮（`v-compress`）；上传弹窗有「上传后压缩」勾选项（`#compressAfterUpload`），上传完成自动转码
+- 大视频压缩收益：1080p 高码率视频通常可省 30%+；已压缩的小视频会被 skip
 
 ### 前端三页水平布局（CSS translateX）
 - `#pages` 300% 宽 flex，三页各 1/3，`translateX(calc(-1 * var(--page) * 100% / 3))` 切页
@@ -132,6 +145,7 @@ git log --format="%h %s" -1 >> logs/commit.txt
 - [ ] `PUT /upload/:filename` 简单流式上传 → 200 `{ok,url}`（勿出现 500 ENOENT）
 - [ ] `GET /obs/:filename` 带 `Range` → 206，后缀 `bytes=-N` → 206，超界 → 416
 - [ ] `DELETE /obs/:filename` → ok，删后 404
+- [ ] `POST /compress/:filename` → 200 `{ok,before,after,savedPct}`，输出为 H.264 + faststart（moov 在 mdat 前）；已压缩的小视频 → `skipped:true`
 - [ ] 路径穿越 `..%2F` → 404
 - [ ] `node --check server.js public/app.js` 语法通过
 - [ ] 前端三页 translateX 切换 + 三页同步播放（`logs/run.log` 无报错）

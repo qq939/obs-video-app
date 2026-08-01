@@ -117,6 +117,52 @@ function sha256File(filePath) {
     });
 }
 
+/**
+ * Compress a video with ffmpeg into an H.264/AAC MP4 with the moov atom
+ * moved to the front (+faststart). This is the same approach YouTube/Douyin
+ * use for browser playback: broad codec compatibility + instant start.
+ */
+function runFfmpeg(args) {
+    return new Promise((resolve, reject) => {
+        const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.on('error', (err) => reject(new Error('ffmpeg not available: ' + err.message)));
+        child.on('close', (code) => {
+            if (code === 0) resolve();
+            else reject(new Error('ffmpeg exit ' + code + ': ' + stderr.split('\n').slice(-3).join(' ').trim()));
+        });
+    });
+}
+
+async function compressVideo(filePath) {
+    const before = fs.statSync(filePath).size;
+    const tmpOut = path.join(UPLOAD_DIR, `.comp-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.mp4`);
+    const args = [
+        '-y', '-i', filePath,
+        '-c:v', 'libx264', '-preset', 'medium', '-crf', '23',
+        '-pix_fmt', 'yuv420p',
+        '-vf', "scale='min(1920,iw)':-2",
+        '-c:a', 'aac', '-b:a', '128k',
+        '-movflags', '+faststart',
+        tmpOut
+    ];
+    try {
+        await runFfmpeg(args);
+    } catch (e) {
+        if (fs.existsSync(tmpOut)) fs.unlinkSync(tmpOut);
+        throw e;
+    }
+    const after = fs.statSync(tmpOut).size;
+    if (after >= before) {
+        // Compressed output isn't smaller (already well-compressed); keep original.
+        fs.unlinkSync(tmpOut);
+        return { skipped: true, before, after, saved: 0, savedPct: 0 };
+    }
+    fs.renameSync(tmpOut, filePath);
+    return { skipped: false, before, after, saved: before - after, savedPct: Math.round((1 - after / before) * 100) };
+}
+
 function listVideoFiles() {
     if (!fs.existsSync(OBS_DIR)) return [];
     const items = fs.readdirSync(OBS_DIR)
@@ -461,6 +507,21 @@ const server = http.createServer(async (req, res) => {
             fs.unlinkSync(filePath);
             logLine(`deleted: ${filename}`);
             return sendJson(res, 200, { ok: true });
+        }
+
+        // ---- compress: POST /compress/:filename (H.264 faststart transcode)
+        const compressMatch = p.match(/^\/compress\/(.+)$/);
+        if (method === 'POST' && compressMatch) {
+            const filename = safeName(compressMatch[1]);
+            if (!filename) return sendJson(res, 400, { error: 'invalid filename' });
+            const filePath = path.join(OBS_DIR, filename);
+            if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+                return sendJson(res, 404, { error: 'Not Found' });
+            }
+            logLine(`compress start: ${filename}`);
+            const result = await compressVideo(filePath);
+            logLine(`compress done: ${filename} ${result.before} -> ${result.after} bytes (${result.savedPct}% saved)`);
+            return sendJson(res, 200, { ok: true, ...result });
         }
 
         // ---- static frontend from public/

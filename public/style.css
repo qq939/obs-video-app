@@ -51,9 +51,10 @@ html, body {
 }
 .feed::-webkit-scrollbar { display: none; }
 
-/* On pages with a side panel, keep the video feed to the left of the panel */
-.page[data-active="0"] .feed,
-.page[data-active="2"] .feed { right: min(300px, 78vw); }
+/* On pages with a side panel, keep the video feed clear of the panel.
+   Page 0's info panel is on the RIGHT; page 2's settings panel is mirrored to the LEFT. */
+.page[data-active="0"] .feed { right: min(300px, 78vw); }
+.page[data-active="2"] .feed { left: min(300px, 78vw); }
 
 .video-item {
     position: relative;
@@ -99,6 +100,24 @@ html, body {
     cursor: pointer;
     backdrop-filter: blur(4px);
 }
+.video-item .v-compress {
+    position: absolute;
+    top: 14px;
+    right: 72px;
+    z-index: 6;
+    background: rgba(0,0,0,.45);
+    border: none;
+    color: #fff;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+}
+.video-item .v-compress[disabled] {
+    opacity: .5;
+    cursor: default;
+}
 
 /* ---------------- empty state ---------------- */
 .empty-state {
@@ -131,8 +150,15 @@ html, body {
     transition: transform .35s cubic-bezier(.4,0,.2,1);
 }
 .page[data-active="1"] .side-panel { transform: translateX(105%); }
-.page[data-active="0"] .side-panel,
-.page[data-active="2"] .side-panel { transform: translateX(0); }
+.page[data-active="0"] .side-panel { transform: translateX(0); }
+/* page 2's settings panel mirrors page 0's info panel: anchored to the LEFT edge */
+.page[data-active="2"] .side-panel {
+    right: auto;
+    left: 0;
+    border-left: none;
+    border-right: 1px solid rgba(255,255,255,.08);
+    transform: translateX(0);
+}
 
 .panel-head {
     padding: 18px 16px 12px;
@@ -294,7 +320,17 @@ html, body {
 #progressFill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #fe2c55, #ff7a45); transition: width .2s ease; }
 .progress-text { margin-top: 8px; font-size: 13px; color: rgba(255,255,255,.7); text-align: center; }
 
-.modal-actions { margin-top: 16px; display: flex; justify-content: center; }
+.modal-actions { margin-top: 16px; display: flex; justify-content: center; align-items: center; gap: 14px; }
+.upload-opt {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: rgba(255,255,255,.75);
+    cursor: pointer;
+    user-select: none;
+}
+.upload-opt input { accent-color: #fe2c55; width: 15px; height: 15px; }
 .cancel-btn {
     padding: 10px 26px;
     border: none;

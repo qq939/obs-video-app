@@ -21,6 +21,8 @@
 - 🪟 **上传弹窗**：设置页右下角 `＋` **或设置菜单内「＋ 上传视频」按钮**打开，支持点击选择 / 拖拽文件，实时显示分片进度
 - 📡 **HTTP Range 流式播放**：支持 `206 Partial Content`，浏览器可拖拽进度条
 - 🗑️ **删除视频**：视频卡片右上角一键删除
+- 🗜️ **视频压缩**：视频卡片「压缩」按钮一键转码为 H.264/AAC MP4（`ffmpeg` + `+faststart`），体积更小、浏览器秒开；
+  上传弹窗可勾选「上传后压缩」自动转码
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
@@ -118,7 +120,19 @@ project/
 
 `DELETE /obs/:filename` → `{ "ok": true }`
 
-### 6. 平台接口
+### 6. 压缩
+
+`POST /compress/:filename` → 用 ffmpeg 转码为 H.264/AAC MP4（`+faststart`，moov 前置，浏览器秒开）：
+
+```json
+{ "ok": true, "skipped": false, "before": 3553000, "after": 2247472, "saved": 1305528, "savedPct": 37 }
+```
+
+- 压缩参数：`libx264 -crf 23 -preset medium -pix_fmt yuv420p`，宽度上限 1920，音频 `aac 128k`
+- 输出比原文件更小才覆盖；否则保留原文件并返回 `skipped: true`
+- 前端：视频卡片「压缩」按钮；上传弹窗「上传后压缩」勾选项
+
+### 7. 平台接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
@@ -136,7 +150,9 @@ project/
 选择文件 → 计算 sha256 → POST /upload/init
   ├─ 命中已存在 → 秒传跳过
   └─ 否则 → 遍历分片 PUT /upload/chunk/:uploadId/:index（跳过 uploaded[] 中已传分片）
-           → POST /upload/complete → 刷新视频流
+           → POST /upload/complete
+           → （若勾选「上传后压缩」）POST /compress/:filename 自动转码
+           → 刷新视频流
 ```
 
 分片大小：2 MB（前端），`/upload/init` 可自定义 `chunkSize`。
