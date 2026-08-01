@@ -20,6 +20,10 @@ uploads/
 dist/
 build/
 
+# Video storage (keep the dir via .gitkeep)
+obs/*
+!obs/.gitkeep
+
 # Session transcripts (agent runtime data)
 sessions/
 
