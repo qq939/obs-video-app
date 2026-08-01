@@ -112,6 +112,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 每页在当前索引各有一个 `<video>`，以当前页为 leader，每 500ms 同步 `currentTime` 到其它两页（进度同步）
 - 侧面板显隐：JS 静态设置 `pg.dataset.active = pg.dataset.page`，CSS 用 `[data-active="0"/"2"]` 显示面板并收窄 feed
 - 上传弹窗：设置页右下角 `＋` **或设置菜单内 `#uploadPanelBtn`（「＋ 上传视频」）** → `#uploadModal`，支持点击 / 拖拽选择文件，分片进度实时显示
+- **点视频回中间**：在侧面板页（页 0=播放信息 / 页 2=设置）视频只占左半，点击可见视频区域 → `setPage(1)` 回到中间纯 feed 页并恢复播放（`handleTap` 中 `currentPage !== 1` 分支）
 
 ## 日志整理流程
 
