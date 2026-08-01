@@ -1,0 +1,30 @@
+# Logs
+logs/
+*.log
+
+# Node
+node_modules/
+
+# macOS / OS junk
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Env / secrets
+.env
+
+# Uploads / build artifacts
+uploads/
+dist/
+build/
+
+# Session transcripts (agent runtime data)
+sessions/
+
+# Sync test artifacts
+test_sync.txt
+
+# Temp images
+tmp.png
