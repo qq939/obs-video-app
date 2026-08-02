@@ -22,6 +22,7 @@
 - 📡 **HTTP Range 流式播放**：支持 `206 Partial Content`，浏览器可拖拽进度条
 - 🗑️ **删除视频**：视频卡片右上角一键删除
 - 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传；视频卡片「压缩」按钮则一键服务端转码为 H.264/AAC MP4（`ffmpeg` + `+faststart`），体积更小、浏览器秒开
+- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片，浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅；hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
@@ -85,11 +86,13 @@ project/
 ├── systemreadme.md        # 平台惯例文档
 ├── hermit-container-debugging-guide.md
 ├── obs/                   # 视频存储目录
-│   └── .uploads/          # 分片上传临时目录（完成后自动清理）
+│   ├── .uploads/          # 分片上传临时目录（完成后自动清理）
+│   └── .hls/              # HLS 分片目录（<name>/index.m3u8 + seg-*.ts）
 ├── public/                # 前端静态资源
 │   ├── index.html         # 页面骨架
 │   ├── style.css          # 抖音式竖屏样式
-│   └── app.js             # 上传 / 播放 / 删除逻辑
+│   ├── app.js             # 上传 / 播放 / 删除逻辑
+│   └── vendor/hls.min.js  # hls.js（浏览器端 HLS 播放，jsdelivr 下载）
 ├── AGENTS.md / SOUL.md / USER.md / TOOLS.md / BOOTSTRAP.md / IDENTITY.md / HEARTBEAT.md
 ├── memory/                # 每日会话记录
 ├── .gitignore
@@ -146,7 +149,11 @@ project/
 
 ### 4. 视频列表
 
-`GET /videos` → `{ "videos": [ { "name": "a.mp4", "size": 3670016, "mtime": "...", "url": "/obs/a.mp4" } ] }`
+`GET /videos` → `{ "videos": [ { "name": "a.mp4", "size": 3670016, "mtime": "...", "url": "/obs/a.mp4", "hls": "/hls/a.mp4/index.m3u8", "hlsReady": false } ] }`
+
+- `url`：直连播放/下载地址（原字段）
+- `hls`：HLS 播放列表地址（m3u8，新增字段）
+- `hlsReady`：HLS 分片是否已生成（新增字段；后台异步生成，未就绪时前端直接播 mp4/webm）
 
 ### 5. 删除
 
@@ -164,7 +171,31 @@ project/
 - 输出比原文件更小才覆盖；否则保留原文件并返回 `skipped: true`
 - 前端：视频卡片「压缩」按钮（服务端转码）；上传弹窗「压缩后上传」勾选项（浏览器端先压缩再上传，见下）
 
-### 7. 平台接口
+### 7. HLS 流式播放（m3u8 + ts）
+
+服务端用 ffmpeg 把视频切成 4s 的 ts 分片并生成 VOD 播放列表（`obs/.hls/<name>/index.m3u8` + `seg-*.ts`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。OBS 上传 / 下载 / 列表接口全部保留。
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/hls/:name/index.m3u8` | GET / HEAD | 播放列表（`application/vnd.apple.mpegurl`），支持 Range；源文件存在但分片缺失时**自动惰性生成** |
+| `/hls/:name/seg-NNNNN.ts` | GET / HEAD | ts 分片（`video/mp2t`），支持 Range；严格 `seg-\d+\.ts` 正则防穿越 |
+| `/hls/:name/generate` | POST | 手动触发生成（前端「转HLS」按钮），返回 `{ ok, name, hls }` |
+
+生成规则：
+
+- H.264 + AAC/MP3 → `-c copy` **快速 remux**（不重编码、无质量损失）；其它（webm/vp9 等）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`
+- 统一参数：`-f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（VOD，全量保留分片）
+- 上传完成 / 压缩后自动后台生成；删除视频同时删除 `obs/.hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
+- m3u8 使用**相对分段名**（ffmpeg 在分段临时目录内运行），自动解析到 `/hls/<name>/` 下
+
+前端：
+
+- `public/vendor/hls.min.js`（hls.js 1.5.13，jsdelivr 下载）由 `index.html` 在 `/app.js` 前引入，**必须存在**，否则非 Safari 浏览器无法走 HLS（自动回退直连 mp4/webm）
+- 仅中间副本且在缓存窗口内的视频挂 hls.js；leader `startLoad()`、非 leader `stopLoad()`（避免后台狂拉分片）
+- hls.js 致命错误：网络错误重试 1 次 → 媒体错误 `recoverMediaError()` 1 次 → 仍失败则销毁实例并回退直连 mp4/webm（`_hlsFallback` 防重挂循环）
+- Safari 原生 HLS：`NATIVE_HLS` 仅当 UA 为 Safari 且 `canPlayType('application/vnd.apple.mpegurl')` 为真（Chromium/Firefox/Edge 也报告 `maybe` 但无法播放，需用 UA 排除）
+
+### 8. 平台接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|

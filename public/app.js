@@ -50,6 +50,21 @@
     // video pauses it and records its position; scrolling back resumes it.
     const positions = new Map();
 
+    // ---------------------------------------------------------------- HLS capability
+    // Native HLS (Safari) needs no library; hls.js covers Chrome/Firefox/Edge.
+    // hlsReady gating: when HLS hasn't been generated yet we just play the
+    // mp4/webm directly instead of blocking on a lazy /hls generation.
+    // NB: Chrome/Firefox/Edge report canPlayType('application/vnd.apple.mpegurl')
+    // as 'maybe' but cannot actually play HLS, so native HLS is only used on
+    // real Safari (the standard negative-lookahead UA test).
+    const _probe = document.createElement('video');
+    const _canNativeHls = !!(_probe.canPlayType && _probe.canPlayType('application/vnd.apple.mpegurl'));
+    const HAS_HLSJS = !!(window.Hls && window.Hls.isSupported && window.Hls.isSupported());
+    const NATIVE_HLS = _canNativeHls && /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
+    function hlsCapable(v) {
+        return !!(v && v.hls && v.hlsReady) && (NATIVE_HLS || HAS_HLSJS);
+    }
+
     const EMPTY_HTML =
         '<div class="empty-state">' +
         '<div class="empty-icon">🎬</div>' +
@@ -217,9 +232,14 @@
     function createVideoItem(v) {
         const item = document.createElement('div');
         item.className = 'video-item';
+        item._videoData = v;
 
         const video = document.createElement('video');
         video.src = v.url;
+        // Safari plays HLS natively; just point src at the playlist. hls.js
+        // browsers keep the direct src here and get hls.js attached later by
+        // manageHls() (only for in-window middle copies).
+        if (NATIVE_HLS && v.hlsReady) video.src = v.hls;
         // Never mute: a paused video is silent on its own, and muting would
         // interfere with getting sound working on entry.
         video.muted = false;
@@ -269,6 +289,28 @@
             }
         });
         item.appendChild(comp);
+
+        const hls = document.createElement('button');
+        hls.className = 'v-hls';
+        hls.textContent = v.hlsReady ? '已转HLS' : '转HLS';
+        hls.disabled = !!v.hlsReady;
+        hls.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            if (v.hlsReady) return;
+            if (!confirm('为 ' + v.name + ' 生成 HLS 流（m3u8 + ts）？')) return;
+            hls.disabled = true;
+            hls.textContent = '生成中…';
+            try {
+                await jsonFetch('/hls/' + encodeURIComponent(v.name) + '/generate', { method: 'POST' });
+                await loadFeed();
+            } catch (err) {
+                alert('生成失败：' + err.message);
+                hls.disabled = false;
+                hls.textContent = '转HLS';
+            }
+        });
+        item.appendChild(hls);
 
         const del = document.createElement('button');
         del.className = 'v-delete';
@@ -399,6 +441,82 @@
                 const inWindow = diff <= 1;   // prev / current / next (circular)
                 video.preload = inWindow ? 'metadata' : 'none';
                 if (!inWindow) video.pause();   // paused => no sound, no need to mute
+            }
+        });
+        manageHls();
+    }
+
+    // ---------------------------------------------------------------- HLS
+    // hls.js lifecycle. Only middle-copy items (DOM indices [n, 2n)) inside
+    // the cache window (prev / current / next) get an hls.js instance; ghost
+    // copies and out-of-window items keep the direct mp4/webm src. The leader
+    // (active item on the current page) calls startLoad() so segments are
+    // fetched; non-leaders call stopLoad() so background copies don't hammer
+    // the server. Fatal errors destroy the instance and fall back to the
+    // direct src permanently for that item.
+    function attachHls(item, video, v) {
+        if (!video || !window.Hls || !window.Hls.isSupported()) return;
+        if (video._hls || video._hlsFallback) return;
+        const hls = new window.Hls({ maxBufferLength: 30 });
+        video._hls = hls;
+        hls.loadSource(v.hls);
+        hls.attachMedia(video);
+        let networkRetries = 0;
+        let mediaRetries = 0;
+        hls.on(window.Hls.Events.ERROR, (evt, data) => {
+            if (!data || !data.fatal) return;
+            if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR && networkRetries < 1) {
+                networkRetries++;
+                hls.startLoad();
+            } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR && mediaRetries < 1) {
+                mediaRetries++;
+                hls.recoverMediaError();
+            } else {
+                destroyHls(item, video, v, true);
+            }
+        });
+    }
+
+    function destroyHls(item, video, v, permanent) {
+        if (video && video._hls) {
+            try { video._hls.destroy(); } catch (e) { /* ignore */ }
+            video._hls = null;
+        }
+        if (video && v && permanent) {
+            video._hlsFallback = true;
+            video.src = v.url;
+        }
+    }
+
+    function manageHls() {
+        if (videos.length === 0) return;
+        const n = videos.length;
+        feeds.forEach((feed, pi) => {
+            for (let i = 0; i < feed.children.length; i++) {
+                const item = feed.children[i];
+                if (!item || !item.querySelector) continue;
+                const video = item.querySelector('video');
+                if (!video) continue;
+                const v = item._videoData;
+                // Only the middle copy participates in hls.js; ghost copies
+                // stay on direct src (they are only on screen momentarily
+                // during a wrap transition).
+                const isMiddle = i >= n && i < 2 * n;
+                const realIdx = i % n;
+                const diff = Math.min(Math.abs(realIdx - activeIndex), n - Math.abs(realIdx - activeIndex));
+                const inWindow = diff <= 1;
+                const isLeader = pi === currentPage && i === n + activeIndex;
+                // Native HLS (Safari) is handled by the browser via the m3u8
+                // src set in createVideoItem — never attach hls.js on top.
+                if (isMiddle && inWindow && !NATIVE_HLS && hlsCapable(v) && !video._hlsFallback) {
+                    if (!video._hls) attachHls(item, video, v);
+                    if (video._hls) {
+                        if (isLeader) video._hls.startLoad();
+                        else video._hls.stopLoad();
+                    }
+                } else if (video._hls) {
+                    destroyHls(item, video, v, false);
+                }
             }
         });
     }
@@ -553,6 +671,7 @@
         currentPage = n;
         pagesEl.style.setProperty('--page', n);
         buildPageDots();
+        manageHls();        // new leader needs startLoad() before play()
         updatePlayback();
     }
 
@@ -597,6 +716,7 @@
         const target = e.target;
         if (!target || !target.closest) return;
         if (target.closest('.v-delete') || target.closest('.v-compress') ||
+            target.closest('.v-hls') ||
             target.closest('.upload-btn') ||
             target.closest('.cancel-btn') || target.closest('.refresh-btn') ||
             target.closest('.modal')) return;
@@ -643,6 +763,7 @@
             currentPage = target;
             pagesEl.style.setProperty('--page', target);
             buildPageDots();
+            manageHls();        // new leader needs startLoad() before play()
             updatePlayback();
         }
         pagesEl.style.transform = '';
