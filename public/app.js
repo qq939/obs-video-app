@@ -815,22 +815,116 @@
         }
     }
 
+    // Compress a video in the browser *before* upload so the network payload
+    // is smaller. Uses <video>.captureStream() + MediaRecorder to re-encode to
+    // webm. Returns a smaller File, or null when unsupported/failed/not smaller.
+    function detectRecordingMime() {
+        if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return null;
+        const candidates = [
+            'video/webm;codecs=vp9,opus',
+            'video/webm;codecs=vp8,opus',
+            'video/webm'
+        ];
+        for (const c of candidates) {
+            if (MediaRecorder.isTypeSupported(c)) return c;
+        }
+        return null;
+    }
+
+    async function compressFileClient(file, onProgress) {
+        if (!file || file.size === 0) return null;
+        if (typeof HTMLMediaElement === 'undefined' || !HTMLMediaElement.prototype.captureStream) return null;
+        const mime = detectRecordingMime();
+        if (!mime) return null;
+
+        const url = URL.createObjectURL(file);
+        const video = document.createElement('video');
+        video.src = url;
+        // volume=0 bypasses the autoplay policy while captureStream() still
+        // records the decoded audio track (muted would silence the recording).
+        video.muted = false;
+        video.volume = 0;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.style.cssText = 'position:fixed;top:0;left:0;width:2px;height:2px;opacity:0;pointer-events:none;';
+        document.body.appendChild(video);
+
+        try {
+            await new Promise((resolve, reject) => {
+                const to = setTimeout(() => reject(new Error('视频加载超时')), 10000);
+                video.onloadedmetadata = () => { clearTimeout(to); resolve(); };
+                video.onerror = () => { clearTimeout(to); reject(new Error('视频加载失败')); };
+            });
+            await video.play();
+            const stream = video.captureStream();
+            const recorder = new MediaRecorder(stream, {
+                mimeType: mime,
+                videoBitsPerSecond: 2500000,
+                audioBitsPerSecond: 128000
+            });
+            const chunks = [];
+            recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+            const stopped = new Promise((r) => { recorder.onstop = r; });
+            recorder.start(500);
+
+            await new Promise((resolve) => {
+                const durSec = video.duration && isFinite(video.duration) ? video.duration : 0;
+                const t = setInterval(() => {
+                    if (video.ended) {
+                        clearInterval(t);
+                        resolve();
+                    } else if (durSec > 0 && onProgress) {
+                        onProgress(Math.min(99, Math.round((video.currentTime / durSec) * 100)));
+                    }
+                }, 300);
+                // safety net: never hang even if 'ended' is missed
+                setTimeout(() => { clearInterval(t); resolve(); }, durSec * 1000 + 15000);
+            });
+            recorder.stop();
+            await stopped;
+            video.pause();
+            video.src = '';
+            video.load();
+            video.remove();
+
+            const blob = new Blob(chunks, { type: mime });
+            if (blob.size <= 0 || blob.size >= file.size) return null;
+            const base = file.name.replace(/\.[^.]+$/, '');
+            return new File([blob], base + '.webm', { type: mime });
+        } catch (err) {
+            console.error('client compress failed:', err);
+            video.pause();
+            video.src = '';
+            video.load();
+            video.remove();
+            return null;
+        } finally {
+            URL.revokeObjectURL(url);
+        }
+    }
+
     async function startUpload(file) {
         try {
-            await uploadFile(file);
-            const compressOpt = document.getElementById('compressAfterUpload');
+            let target = file;
+            const compressOpt = document.getElementById('compressBeforeUpload');
             if (compressOpt && compressOpt.checked) {
                 progressArea.classList.remove('hidden');
                 progressTitle.textContent = file.name + ' —— 压缩中…';
-                progressFill.style.width = '100%';
-                progressText.textContent = 'H.264 转码';
-                try {
-                    await jsonFetch('/compress/' + encodeURIComponent(file.name), { method: 'POST' });
-                } catch (err) {
-                    console.error('auto-compress failed:', err);
+                progressFill.style.width = '0%';
+                progressText.textContent = '浏览器转码 0%';
+                const compressed = await compressFileClient(file, (pct) => {
+                    progressFill.style.width = pct + '%';
+                    progressText.textContent = '浏览器转码 ' + pct + '%';
+                });
+                if (compressed) {
+                    target = compressed;
+                    progressTitle.textContent = compressed.name;
+                } else {
+                    progressTitle.textContent = file.name + '（未压缩）';
                 }
-                progressArea.classList.add('hidden');
+                await sleep(300);
             }
+            await uploadFile(target);
             await loadFeed();
             closeModal();
         } catch (err) {

@@ -103,8 +103,20 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   - `-c:a aac -b:a 128k`：AAC 音频
   - `-movflags +faststart`：moov 移到文件头，浏览器秒开（渐进播放关键）
 - 压缩到 `obs/.uploads/.comp-*.mp4` 临时文件，成功且更小才 `rename` 覆盖原文件；若输出 ≥ 原文件则保留原文件并返回 `skipped:true`
-- 前端：每个视频卡片有「压缩」按钮（`v-compress`）；上传弹窗有「上传后压缩」勾选项（`#compressAfterUpload`），上传完成自动转码
+- 前端：每个视频卡片有「压缩」按钮（`v-compress`，服务端 ffmpeg 转码）；上传弹窗有「压缩后上传」勾选项（`#compressBeforeUpload`，默认勾选，浏览器端先压缩再上传）
 - 大视频压缩收益：1080p 高码率视频通常可省 30%+；已压缩的小视频会被 skip
+
+### 压缩后上传（浏览器端先压缩，省网络流量）
+- **逻辑**：「压缩后上传」是**上传前**在浏览器端把视频重编码为 webm（VP9/Opus）再上传，省的是**网络流量**；视频卡片「压缩」按钮是**上传后**在服务端 ffmpeg 转码为 H.264 MP4，用于已有大文件瘦身。两者并存。
+- **实现**：`public/app.js` 的 `compressFileClient(file, onProgress)`——
+  - 创建离屏 `<video>`（`position:fixed; width:2px; opacity:0`），`src = URL.createObjectURL(file)`，**`muted=false; volume=0`**（volume=0 绕过自动播放策略，且 `captureStream()` 仍录到完整音频——`muted=true` 会把录音静音）；
+  - `await video.play()` 后 `video.captureStream()` + `MediaRecorder`（webm，`videoBitsPerSecond: 2_500_000`，`audioBitsPerSecond: 128_000`，`start(500)` 分片收集）；
+  - 以 `currentTime/duration` 上报进度；`ended` 或兜底超时（duration+15s）后 `recorder.stop()`，合成 `Blob`；
+  - 输出 `blob.size >= file.size` → 返回 `null`（回退直传原文件）；否则返回 `baseName.webm` 的 `File`；
+  - 特性检测：`MediaRecorder` / `HTMLMediaElement.prototype.captureStream` / `isTypeSupported`（vp9→vp8→裸 webm），不支持或失败一律返回 `null` 回退。
+- **startUpload 流程**：勾选时先 `compressFileClient`（进度条「浏览器转码 xx%」），有压缩结果就用 webm 上传、否则原文件（提示「未压缩」），再走原有 `uploadFile`（sha256→init→分片→complete）。
+- 服务端无需改动：`VIDEO_EXTS` 与 MIME 已含 `.webm`/`video/webm`。
+- 验证（`/tmp/verify_compress_before_upload.py`）：3.28MB mp4 → 存为 `cbt_src.webm`（1.33MB，省 59%），ffprobe 见 vp9+opus 双轨，`volumedetect` mean ≈ -21 dB（音频非静音）；取消勾选 → 原样传 mp4（`/tmp/verify_compress_unchecked.py`）。
 
 ### 前端三页水平布局（CSS translateX）
 - `#pages` 300% 宽 flex，三页各 1/3，`translateX(calc(-1 * var(--page) * 100% / 3))` 切页
