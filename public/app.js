@@ -445,12 +445,12 @@
     }
 
     // ---------------------------------------------------------------- HLS
-    // hls.js lifecycle. Only middle-copy items (DOM indices [n, 2n)) inside
-    // the cache window (prev / current / next) get an hls.js instance; ghost
-    // copies and out-of-window items keep the direct mp4/webm src. The leader
-    // (active item on the current page) calls startLoad() so segments are
-    // fetched; non-leaders call stopLoad() so background copies don't hammer
-    // the server. Fatal errors destroy the instance and fall back to the
+    // hls.js lifecycle. Only the middle-copy of the ACTIVE video gets an
+    // hls.js instance; everything else (other videos, ghost copies) keeps the
+    // direct mp4/webm src. The leader (active item on the current page) calls
+    // startLoad() so segments are fetched only for what the user is watching;
+    // everyone else calls stopLoad() so background copies don't hammer the
+    // server. Fatal errors destroy the instance and fall back to the
     // direct src permanently for that item.
     function attachHls(item, video, v) {
         if (!video || !window.Hls || !window.Hls.isSupported()) return;
@@ -501,12 +501,11 @@
                 // during a wrap transition).
                 const isMiddle = i >= n && i < 2 * n;
                 const realIdx = i % n;
-                const diff = Math.min(Math.abs(realIdx - activeIndex), n - Math.abs(realIdx - activeIndex));
-                const inWindow = diff <= 1;
+                const isActive = realIdx === activeIndex;
                 const isLeader = pi === currentPage && i === n + activeIndex;
                 // Native HLS (Safari) is handled by the browser via the m3u8
                 // src set in createVideoItem — never attach hls.js on top.
-                if (isMiddle && inWindow && !NATIVE_HLS && hlsCapable(v) && !video._hlsFallback) {
+                if (isMiddle && isActive && !NATIVE_HLS && hlsCapable(v) && !video._hlsFallback) {
                     if (!video._hls) attachHls(item, video, v);
                     if (video._hls) {
                         if (isLeader) video._hls.startLoad();

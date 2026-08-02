@@ -133,7 +133,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   - 声音：**全程不禁音**（无任何 `muted=true`）。`updatePlayback()` 对 leader 直接 `muted=false` 后 `play()`；若浏览器自动播放策略拒绝（promise reject），视频保持暂停、等首个用户手势触发 `updatePlayback()` 再播。手势监听列表 = `['pointermove','wheel','scroll','touchmove','keydown']`（任一发生即 `{once:true}` 解锁）；**刻意避开 `touchstart/mousedown/pointerdown/click` 这类「按下」类事件**，因为移动鼠标 / 滚轮 / 触摸滑动这些高频事件就足以让浏览器判定为 user gesture —— 用户**不用点击屏幕**就能解锁播放
   - 无声泄漏：`updatePlayback()` 先遍历当前 feed，把除活动视频外**所有** `<video>` `pause()`（暂停即无声，无需 mute）；切走的上一个视频立即停声；非当前页的活动视频也保持暂停（仅 500ms 同步 `currentTime`）
   - 位置缓存：`positions` Map（视频名 → 秒）。`applyIndex()` 切走前 `recordActivePosition()` 记录当前位置；`updatePlayback()` 切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（元数据未加载时用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek，完成后删除缓存项）；`loadFeed()` 清空缓存
-  - 缓存窗口：`updateVideoCache()` 只对 prev/current/next（环形）三个视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免浏览器把整个 feed 都缓冲、也避免远处视频出声
+  - 按需缓存：`updateVideoCache()` 只对**当前活动视频**（`realIdx === activeIndex`）保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免浏览器把整个 feed 都缓冲、也避免远处视频出声；hls.js 也只在活动视频上 attach（`manageHls` 用 `isActive` 而非 prev/next 窗口判断）
 
 ### 纵向无尽头滚动（3 副本 + 隐形回绕）
 - 每个 feed 渲染 `FEED_COPIES=3` 份视频列表（中间份为「真实」位置，`scrollToIndex` 定位到 `n + idx`），上/下滑到首尾都不会卡住，可无限循环
