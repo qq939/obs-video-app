@@ -50,6 +50,39 @@ curl http://localhost:8082/health   # -> OK
 
 ---
 
+## Docker 部署（推荐）
+
+默认对外映射到 **80** 端口（容器内服务监听 8082），部署后可直接访问：
+
+- `http://<你的局域网IP>/`
+- 健康检查：`http://<你的局域网IP>/health`（返回 `OK`）
+
+1) 配置宿主机 OBS 挂载目录（必须绝对路径）：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`，设置：
+
+```bash
+OBS_HOST_DIR=/ABSOLUTE/PATH/TO/YOUR/OBS/DIR
+```
+
+2) 启动 / 更新：
+
+```bash
+docker compose up -d --build
+```
+
+3) 停止：
+
+```bash
+docker compose down
+```
+
+---
+
 ## 目录结构
 
 ```
