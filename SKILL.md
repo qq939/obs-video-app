@@ -130,7 +130,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - **点视频回中间**：在侧面板页（页 0=播放信息 / 页 2=设置）视频只占一侧，点击可见视频区域 → `setPage(1)` 回到中间纯 feed 页并恢复播放（`handleTap` 中 `currentPage !== 1` 分支）
 - **侧页 3 倍速快进/倒退**：切到左页（页 0 播放信息）视频 3 倍速倒退，切到右页（页 2 设置）3 倍速前进，中间页正常 1 倍速；Chrome/Safari 不支持负 `playbackRate`，倒退用 100ms 定时器手动 `currentTime -= 0.3`（≈3x）实现，前进用 `playbackRate = 3`；`updatePlayback()` 里按 `currentPage` 决定，切回中间页自动恢复
 - **进页即有声音 + 滑走暂停/滑回续播**：
-  - 声音：**全程不禁音**（无任何 `muted=true`）。`updatePlayback()` 对 leader 直接 `muted=false` 后 `play()`；若浏览器自动播放策略拒绝（promise reject），视频保持暂停、等首个用户手势（`touchstart/mousedown/pointerdown/click` 任一，once 监听）触发 `updatePlayback()` 再播——旧代码用 `userInteracted` 门控 + 只监听 `touchstart/click`，桌面鼠标拖拽滑动不触发 `click`，导致滑完仍无声
+  - 声音：**全程不禁音**（无任何 `muted=true`）。`updatePlayback()` 对 leader 直接 `muted=false` 后 `play()`；若浏览器自动播放策略拒绝（promise reject），视频保持暂停、等首个用户手势触发 `updatePlayback()` 再播。手势监听列表 = `['pointermove','wheel','scroll','touchmove','keydown']`（任一发生即 `{once:true}` 解锁）；**刻意避开 `touchstart/mousedown/pointerdown/click` 这类「按下」类事件**，因为移动鼠标 / 滚轮 / 触摸滑动这些高频事件就足以让浏览器判定为 user gesture —— 用户**不用点击屏幕**就能解锁播放
   - 无声泄漏：`updatePlayback()` 先遍历当前 feed，把除活动视频外**所有** `<video>` `pause()`（暂停即无声，无需 mute）；切走的上一个视频立即停声；非当前页的活动视频也保持暂停（仅 500ms 同步 `currentTime`）
   - 位置缓存：`positions` Map（视频名 → 秒）。`applyIndex()` 切走前 `recordActivePosition()` 记录当前位置；`updatePlayback()` 切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（元数据未加载时用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek，完成后删除缓存项）；`loadFeed()` 清空缓存
   - 缓存窗口：`updateVideoCache()` 只对 prev/current/next（环形）三个视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免浏览器把整个 feed 都缓冲、也避免远处视频出声

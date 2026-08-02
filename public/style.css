@@ -52,9 +52,12 @@ html, body {
 .feed::-webkit-scrollbar { display: none; }
 
 /* On pages with a side panel, keep the video feed clear of the panel.
-   Page 0's info panel is on the LEFT; page 2's settings panel is mirrored to the RIGHT. */
-.page[data-active="0"] .feed { left: min(300px, 78vw); }
-.page[data-active="2"] .feed { right: min(300px, 78vw); }
+   Page 0's info panel is on the LEFT; page 2's settings panel is mirrored
+   to the RIGHT. Both panels take half the screen so the video still has the
+   other half on wide displays; on narrow displays the panel falls back to
+   its 240 px minimum width. */
+.page[data-active="0"] .feed { left: 50%; }
+.page[data-active="2"] .feed { right: 50%; }
 
 .video-item {
     position: relative;
@@ -143,7 +146,8 @@ html, body {
     top: 0;
     right: 0;
     bottom: 0;
-    width: min(300px, 78vw);
+    width: 50%;
+    min-width: 240px;
     z-index: 10;
     background: rgba(18, 18, 20, 0.82);
     backdrop-filter: blur(14px);
