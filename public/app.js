@@ -1091,50 +1091,6 @@
         updatePlayback();
     });
 
-    // Batch "全部转HLS": asks the server to generate HLS for every video that
-    // does not have it yet, then polls /videos until all are ready (or the
-    // progress stalls — a failed file should not block the feed refresh).
-    const hlsAllBtn = document.getElementById('hlsAllBtn');
-    const hlsAllStatus = document.getElementById('hlsAllStatus');
-    if (hlsAllBtn) {
-        hlsAllBtn.addEventListener('click', async () => {
-            if (videos.length === 0) { alert('没有视频可转换'); return; }
-            if (!confirm('为全部 ' + videos.length + ' 个视频生成 HLS 流（m3u8 + ts）？\n已转换的会自动跳过。')) return;
-            hlsAllBtn.disabled = true;
-            hlsAllBtn.textContent = '转换中…';
-            hlsAllStatus.textContent = '';
-            try {
-                const r = await jsonFetch('/hls/generate-all', { method: 'POST' });
-                const total = r.total;
-                let ready = total - (r.pending || 0);
-                if (r.pending === 0) {
-                    hlsAllStatus.textContent = '全部已转换';
-                } else {
-                    hlsAllStatus.textContent = '已转换 ' + ready + ' / ' + total + '…';
-                    let stall = 0;
-                    let lastReady = ready;
-                    for (let i = 0; i < 60; i++) {   // up to ~2 minutes
-                        await sleep(2000);
-                        try {
-                            const data = await jsonFetch('/videos');
-                            ready = (data.videos || []).filter((v) => v.hlsReady).length;
-                        } catch (e) { break; }
-                        hlsAllStatus.textContent = '已转换 ' + ready + ' / ' + total;
-                        if (ready >= total) break;
-                        if (ready === lastReady) { stall++; if (stall >= 4) break; }
-                        else { stall = 0; lastReady = ready; }
-                    }
-                }
-                await loadFeed();
-            } catch (err) {
-                alert('转换失败：' + err.message);
-            } finally {
-                hlsAllBtn.disabled = false;
-                hlsAllBtn.textContent = '全部转HLS';
-            }
-        });
-    }
-
     // ---------------------------------------------------------------- init
     document.querySelectorAll('.page').forEach((pg) => {
         pg.dataset.active = pg.dataset.page;   // page 1 hides its side panel
