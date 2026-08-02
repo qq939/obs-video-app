@@ -874,20 +874,35 @@ setImmediate(() => {
     }
 });
 
-// Daily 24:00 cron: re-scan obs/ and generate HLS for any video that doesn't
-// have a current-version HLS. Implemented in-process because the container
-// doesn't ship crontab (and even if it did, an in-process timer survives restarts
-// since user_start.sh re-launches server.js). One shot per day, fired once.
-const DAILY_CRON_HOUR = 0;       // 24:00 (start of new day) in local time
-const DAILY_CRON_MIN  = 0;
-let lastCronKey = '';            // 'YYYY-MM-DD' of the last successful fire
+// Daily cron at UTC+8 05:00: re-scan obs/ and generate HLS for any video that
+// doesn't have a current-version HLS. Implemented in-process because the
+// container doesn't ship crontab (and even if it did, an in-process timer
+// survives restarts since user_start.sh re-launches server.js). One shot per
+// day, fired once.
+const CRON_TZ = 'Asia/Shanghai';   // UTC+8, no DST
+const CRON_HOUR = 5;
+const CRON_MIN  = 0;
+let lastCronKey = '';              // 'YYYY-MM-DD' in CRON_TZ of the last fire
+function partsInTz(date, tz) {
+    // {y, m, d, h, mi} in the given IANA timezone, no global TZ mutation.
+    const fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+    const parts = Object.fromEntries(fmt.formatToParts(date).map((p) => [p.type, p.value]));
+    return {
+        y: Number(parts.year), m: Number(parts.month), d: Number(parts.day),
+        h: Number(parts.hour === '24' ? '0' : parts.hour),
+        mi: Number(parts.minute),
+    };
+}
 function dailyCronTick() {
-    const now = new Date();
-    if (now.getHours() !== DAILY_CRON_HOUR || now.getMinutes() !== DAILY_CRON_MIN) return;
-    const key = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    const p = partsInTz(new Date(), CRON_TZ);
+    if (p.h !== CRON_HOUR || p.mi !== CRON_MIN) return;
+    const key = `${p.y}-${p.m}-${p.d}`;
     if (key === lastCronKey) return;
     lastCronKey = key;
-    logLine(`daily 24:00 cron: scanning obs/ for missing HLS (${key})`);
+    logLine(`daily ${CRON_TZ} ${CRON_HOUR}:${String(CRON_MIN).padStart(2, '0')} cron: scanning obs/ for missing HLS (${key})`);
     let queued = 0;
     for (const it of listVideoFiles()) {
         if (!hlsExists(it.name)) {
@@ -895,7 +910,7 @@ function dailyCronTick() {
             queued++;
         }
     }
-    logLine(`daily 24:00 cron: queued ${queued} video(s) for HLS generation`);
+    logLine(`daily cron: queued ${queued} video(s) for HLS generation`);
 }
-// 30 s granularity is enough (cron fires within the first minute of 00:00).
+// 30 s granularity is enough (cron fires within the first minute of the hour).
 setInterval(dailyCronTick, 30 * 1000).unref();
