@@ -10,7 +10,6 @@
     const infoPanel = document.getElementById('infoPanel');
     const settingsPanel = document.getElementById('settingsPanel');
     const panelMask = document.getElementById('panelMask');
-    const fabContainer = document.getElementById('fabContainer');
     const edgeHintLeft = document.getElementById('edgeHintLeft');
     const edgeHintRight = document.getElementById('edgeHintRight');
     const infoName = document.getElementById('infoName');
@@ -22,10 +21,6 @@
     const randomSwitch = document.getElementById('randomSwitch');
     const autoplaySwitch = document.getElementById('autoplaySwitch');
     const speedOptions = document.getElementById('speedOptions');
-    const refreshBtn = document.getElementById('refreshBtn');
-    const uploadBtn = document.getElementById('uploadBtn');
-    const uploadPanelBtn = document.getElementById('uploadPanelBtn');
-    const infoToggle = document.getElementById('infoToggle');
     const uploadModal = document.getElementById('uploadModal');
     const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('fileInput');
@@ -38,28 +33,26 @@
     // ---------------------------------------------------------------- state
     let videos = [];
     let activeIndex = 0;
-    let panel = null;           // null | 'info' | 'settings'
+    let panel = null;
     let playing = true;
     let random = true;
     let autoplay = true;
-    let playbackSpeed = 1.5;   // default
+    let playbackSpeed = 1.5;
     let currentAbort = null;
     const positions = new Map();
 
-    // ---------------------------------------------------------------- HLS capability
+    // ---------------------------------------------------------------- HLS
     const _probe = document.createElement('video');
     const _canNativeHls = !!(_probe.canPlayType && _probe.canPlayType('application/vnd.apple.mpegurl'));
     const HAS_HLSJS = !!(window.Hls && window.Hls.isSupported && window.Hls.isSupported());
     const NATIVE_HLS = _canNativeHls && /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
-    function hlsCapable(v) {
-        return !!(v && v.hls && v.hlsReady) && (NATIVE_HLS || HAS_HLSJS);
-    }
+    function hlsCapable(v) { return !!(v && v.hls && v.hlsReady) && (NATIVE_HLS || HAS_HLSJS); }
 
     const EMPTY_HTML =
         '<div class="empty-state">' +
         '<div class="empty-icon">🎬</div>' +
         '<p>还没有视频</p>' +
-        '<p class="sub">点击右下角 + 上传</p>' +
+        '<p class="sub">长按空白处上传</p>' +
         '</div>';
 
     // ---------------------------------------------------------------- utils
@@ -175,33 +168,23 @@
         if (panel === name) return;
         panel = name;
         viewport.dataset.panel = name;
-        // Panel-specific playback behavior
-        if (name === 'settings') {
-            // 3x fast forward on settings panel
-            applyPlaybackEffect(3, false);
-        } else if (name === 'info') {
-            // 3x rewind on info panel
-            applyPlaybackEffect(3, true);
-        }
+        if (name === 'settings') applyPlaybackEffect(3, false);
+        else if (name === 'info') applyPlaybackEffect(3, true);
     }
 
     function closePanel() {
         if (!panel) return;
         panel = null;
         delete viewport.dataset.panel;
-        // Restore normal playback
         applyPlaybackEffect(playbackSpeed, false);
     }
 
-    // ---------------------------------------------------------------- playback effect (panel speed control)
+    // ---------------------------------------------------------------- playback effect
     let effectTimer = null;
-    let effectRewind = false;
 
     function applyPlaybackEffect(speed, rewind) {
         clearInterval(effectTimer);
-        effectRewind = rewind;
         if (rewind && panel === 'info') {
-            // Manual rewind: seek backward at 3x via timer
             effectTimer = setInterval(() => {
                 if (panel !== 'info' || videos.length === 0) { clearInterval(effectTimer); return; }
                 const activeItem = feed.children[videos.length + activeIndex];
@@ -212,28 +195,12 @@
                 if (video.currentTime <= 0) video.pause();
             }, 100);
         } else {
-            // Normal speed (or 3x fast-forward via playbackRate)
             const activeItem = feed.children[videos.length + activeIndex];
             if (activeItem) {
                 const video = activeItem.querySelector('video');
                 if (video) video.playbackRate = speed;
             }
         }
-    }
-
-    // ---------------------------------------------------------------- button auto-hide
-    let hideTimer = null;
-
-    function showButtons() {
-        fabContainer.classList.remove('btn-hide');
-        viewport.classList.add('interacting');
-        clearTimeout(hideTimer);
-        hideTimer = setTimeout(() => {
-            if (!panel && !uploadModal.classList.contains('hidden') === false) {
-                fabContainer.classList.add('btn-hide');
-                viewport.classList.remove('interacting');
-            }
-        }, 3000);
     }
 
     // ---------------------------------------------------------------- render
@@ -321,7 +288,7 @@
         updatePlayback();
     }
 
-    // ---------------------------------------------------------------- feed
+    // ---------------------------------------------------------------- feed scroll
     function scrollToIndex(idx) {
         if (videos.length === 0) { feed.scrollTop = 0; return; }
         feed._progScrollUntil = Date.now() + 60;
@@ -341,7 +308,7 @@
         }, 120);
     });
 
-    function applyIndex(idx, sourceFeed) {
+    function applyIndex(idx) {
         idx = Math.max(0, Math.min(videos.length - 1, idx));
         if (idx === activeIndex) return;
         recordActivePosition();
@@ -403,9 +370,7 @@
             if (isMiddle && isActive && !NATIVE_HLS && hlsCapable(v) && !video._hlsFallback) {
                 if (!video._hls) attachHls(item, video, v);
                 if (video._hls) video._hls.startLoad();
-            } else if (video._hls) {
-                destroyHls(item, video, v, false);
-            }
+            } else if (video._hls) destroyHls(item, video, v, false);
         }
     }
 
@@ -445,7 +410,6 @@
         }
         if (savedPos !== undefined && posConsumed) positions.delete(activeName);
 
-        // Apply panel-aware speed
         const speed = panel === 'settings' ? 3 : panel === 'info' ? 1 : playbackSpeed;
         video.playbackRate = speed;
 
@@ -458,7 +422,6 @@
         }
     }
 
-    // Progress update every 500ms
     setInterval(() => {
         if (videos.length === 0) return;
         const activeItem = feed.children[videos.length + activeIndex];
@@ -496,17 +459,19 @@
     }
 
     // ---------------------------------------------------------------- gestures
-    // Thresholds from mobile UX research (220px for navigation, 8px drag start)
     const SWIPE_THRESHOLD = 220;
-    const DRAG_START = 12;       // higher than before to avoid accidental taps
-    const EDGE_ZONE = 60;        // px from edge to activate edge swipe
-    const CLOSE_THRESHOLD = 80;  // px to drag-close an open panel
-    const VELOCITY_THRESHOLD = 0.3; // px/ms — minimum velocity to confirm swipe
+    const DRAG_START = 12;
+    const EDGE_ZONE = 60;
+    const CLOSE_THRESHOLD = 80;
+    const VELOCITY_THRESHOLD = 0.3;
+    const LONG_PRESS_MS = 800;   // 长按 800ms 触发上传
 
     let swipeStartX = 0, swipeStartY = 0, swipeMoved = false;
     let swipeStartTime = 0;
     let panelDragStartX = 0;
     let draggingPanel = null;
+    let longPressTimer = null;
+    let longPressTarget = null;
 
     viewport.addEventListener('touchstart', (e) => {
         const t = e.touches[0];
@@ -514,14 +479,24 @@
         swipeStartY = t.clientY;
         swipeStartTime = Date.now();
         swipeMoved = false;
-        showButtons();
 
         if (panel) {
             draggingPanel = panel;
             panelDragStartX = t.clientX;
+        } else {
+            // Start long-press detection on feed area
+            longPressTarget = e.target;
+            longPressTimer = setTimeout(() => {
+                // Long press triggered — open upload
+                longPressTimer = null;
+                longPressTarget = null;
+                if (!panel) {
+                    uploadModal.classList.remove('hidden');
+                    progressArea.classList.add('hidden');
+                }
+            }, LONG_PRESS_MS);
         }
 
-        // Show edge hints when finger is near the edge zones
         if (!panel) {
             if (swipeStartX < EDGE_ZONE) edgeHintLeft.style.opacity = '1';
             if (swipeStartX > window.innerWidth - EDGE_ZONE) edgeHintRight.style.opacity = '1';
@@ -533,9 +508,15 @@
         const dx = t.clientX - swipeStartX;
         const dy = t.clientY - swipeStartY;
 
+        // Cancel long-press if finger moved significantly
+        if (longPressTimer && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+            longPressTarget = null;
+        }
+
         if (draggingPanel) {
             swipeMoved = true;
-            // Live drag the open panel
             if (draggingPanel === 'info') {
                 infoPanel.style.transition = 'none';
                 infoPanel.style.transform = 'translateX(' + Math.max(-infoPanel.offsetWidth, Math.min(0, dx)) + 'px)';
@@ -548,7 +529,6 @@
 
         if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) {
             swipeMoved = true;
-            // Edge swipe detection: only trigger from within edge zone
             if (swipeStartX < EDGE_ZONE && dx > SWIPE_THRESHOLD && !panel) {
                 openPanel('info');
                 edgeHintLeft.style.opacity = '0';
@@ -564,6 +544,9 @@
     }, { passive: true });
 
     viewport.addEventListener('touchend', (e) => {
+        // Cancel long-press
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; longPressTarget = null; }
+
         const t = e.changedTouches[0];
         edgeHintLeft.style.opacity = '0';
         edgeHintRight.style.opacity = '0';
@@ -571,7 +554,6 @@
         if (draggingPanel) {
             const dx = t.clientX - panelDragStartX;
             const velocity = Math.abs(dx) / Math.max(1, Date.now() - swipeStartTime);
-            // Close if dragged past threshold OR fast swipe toward closing direction
             if ((draggingPanel === 'info' && (dx > CLOSE_THRESHOLD || (dx > 0 && velocity > VELOCITY_THRESHOLD))) ||
                 (draggingPanel === 'settings' && (dx < -CLOSE_THRESHOLD || (dx < 0 && velocity > VELOCITY_THRESHOLD)))) {
                 closePanel();
@@ -594,13 +576,20 @@
         swipeStartY = e.clientY;
         swipeStartTime = Date.now();
         swipeMoved = false;
-        showButtons();
         if (panel) { draggingPanel = panel; panelDragStartX = e.clientX; }
+        else {
+            longPressTarget = e.target;
+            longPressTimer = setTimeout(() => {
+                if (!panel) { uploadModal.classList.remove('hidden'); progressArea.classList.add('hidden'); }
+                longPressTimer = null;
+            }, LONG_PRESS_MS);
+        }
     });
     viewport.addEventListener('mousemove', (e) => {
         if (!mouseDown) return;
         const dx = e.clientX - swipeStartX;
         const dy = e.clientY - swipeStartY;
+        if (longPressTimer && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) { clearTimeout(longPressTimer); longPressTimer = null; }
         if (draggingPanel) {
             swipeMoved = true;
             if (draggingPanel === 'info') {
@@ -616,6 +605,7 @@
         else if (Math.abs(dy) > 15) swipeMoved = true;
     });
     viewport.addEventListener('mouseup', (e) => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; longPressTarget = null; }
         if (!mouseDown) return;
         mouseDown = false;
         if (draggingPanel) {
@@ -635,7 +625,6 @@
         const dx = endX - swipeStartX;
         const velocity = Math.abs(dx) / Math.max(1, Date.now() - swipeStartTime);
         if (panel) return false;
-        // Open from edge with enough distance OR fast swipe
         if (swipeStartX < EDGE_ZONE && (dx > SWIPE_THRESHOLD || (dx > EDGE_ZONE && velocity > VELOCITY_THRESHOLD))) { openPanel('info'); return true; }
         if (swipeStartX > window.innerWidth - EDGE_ZONE && (dx < -SWIPE_THRESHOLD || (dx < -EDGE_ZONE && velocity > VELOCITY_THRESHOLD))) { openPanel('settings'); return true; }
         return false;
@@ -645,11 +634,8 @@
         const target = e.target;
         if (!target || !target.closest) return;
         if (target.closest('.v-delete') || target.closest('.v-compress') ||
-            target.closest('.upload-btn') || target.closest('.cancel-btn') ||
-            target.closest('.refresh-btn') || target.closest('.upload-panel-btn') ||
-            target.closest('.speed-btn') ||
-            target.closest('.modal') || target.closest('.side-panel') ||
-            target.closest('.info-toggle-btn')) return;
+            target.closest('.cancel-btn') || target.closest('.speed-btn') ||
+            target.closest('.modal') || target.closest('.side-panel')) return;
 
         if (panel) { closePanel(); return; }
 
@@ -660,33 +646,23 @@
         if (idx === activeIndex) { playing = !playing; updatePlayback(); }
     }
 
-    // First interaction unlocks audio
     ['pointermove', 'wheel', 'scroll', 'touchmove', 'keydown'].forEach((ev) => {
         document.addEventListener(ev, function first() { updatePlayback(); }, { once: true, passive: true });
     });
 
-    // Panel mask
     panelMask.addEventListener('click', closePanel);
-
-    // FAB buttons
-    uploadBtn.addEventListener('click', (e) => { e.stopPropagation(); uploadModal.classList.remove('hidden'); progressArea.classList.add('hidden'); });
-    infoToggle.addEventListener('click', (e) => { e.stopPropagation(); openPanel('info'); });
 
     // Speed selector
     speedOptions.addEventListener('click', (e) => {
         const btn = e.target.closest('.speed-btn');
         if (!btn) return;
-        const speed = parseFloat(btn.dataset.speed);
-        playbackSpeed = speed;
+        playbackSpeed = parseFloat(btn.dataset.speed);
         speedOptions.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        if (!panel) applyPlaybackEffect(speed, false);
+        if (!panel) applyPlaybackEffect(playbackSpeed, false);
     });
 
     window.addEventListener('resize', () => { if (videos.length) scrollToIndex(activeIndex); });
-
-    // Initial button show
-    showButtons();
 
     // ---------------------------------------------------------------- upload
     async function computeFileHash(file, onProgress) {
@@ -763,11 +739,11 @@
             const video = document.createElement('video');
             video.muted = true; video.preload = 'auto';
             const url = URL.createObjectURL(file);
-            let canvas = null, ctx = null, chunks = [];
+            let chunks = [];
             video.onloadedmetadata = () => {
-                canvas = document.createElement('canvas');
+                const canvas = document.createElement('canvas');
                 canvas.width = video.videoWidth || 1280; canvas.height = video.videoHeight || 720;
-                ctx = canvas.getContext('2d');
+                const ctx = canvas.getContext('2d');
                 const stream = canvas.captureStream(30);
                 const mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 3000000 });
                 mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
@@ -785,8 +761,6 @@
         });
     }
 
-    // Upload modal events
-    uploadPanelBtn.addEventListener('click', () => { uploadModal.classList.remove('hidden'); progressArea.classList.add('hidden'); closePanel(); });
     cancelBtn.addEventListener('click', () => { if (currentAbort) { currentAbort.abort(); currentAbort = null; } uploadModal.classList.add('hidden'); });
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
@@ -808,10 +782,8 @@
         } else { await uploadFile(file); }
     }
 
-    // Settings events
     randomSwitch.addEventListener('change', () => { random = randomSwitch.checked; loadFeed(); });
     autoplaySwitch.addEventListener('change', () => { autoplay = autoplaySwitch.checked; if (autoplay && !playing) { playing = true; updatePlayback(); } });
-    refreshBtn.addEventListener('click', () => { closePanel(); loadFeed(); });
 
     // ---------------------------------------------------------------- init
     loadFeed();
