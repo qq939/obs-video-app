@@ -118,24 +118,10 @@ html, body {
     opacity: .5;
     cursor: default;
 }
-.video-item .v-hls {
-    position: absolute;
-    top: 14px;
-    right: 130px;
-    z-index: 6;
-    background: rgba(0,0,0,.45);
-    border: none;
-    color: #fff;
-    font-size: 12px;
-    padding: 6px 10px;
-    border-radius: 8px;
-    cursor: pointer;
-    backdrop-filter: blur(4px);
-}
-.video-item .v-hls[disabled] {
-    opacity: .5;
-    cursor: default;
-}
+/* Action buttons (压缩 / 删除) only show on the settings page (page 2).
+   The info page and the middle feed stay clean, as the host requested. */
+.page:not([data-page="2"]) .video-item .v-delete,
+.page:not([data-page="2"]) .video-item .v-compress { display: none; }
 
 /* ---------------- empty state ---------------- */
 .empty-state {
@@ -257,6 +243,28 @@ html, body {
     cursor: pointer;
 }
 .refresh-btn:hover { background: #3a3a3c; }
+
+.hls-all-btn {
+    margin-top: 10px;
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    background: #2a3a52;
+    color: #7cc4ff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.hls-all-btn:hover:not(:disabled) { background: #344a66; }
+.hls-all-btn:disabled { opacity: .6; cursor: default; }
+.hls-all-status {
+    margin-top: 8px;
+    font-size: 12px;
+    color: rgba(255,255,255,.55);
+    text-align: center;
+    min-height: 16px;
+}
 
 /* ---------------- page dot ---------------- */
 .page-dot {

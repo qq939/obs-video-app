@@ -141,10 +141,10 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 程序化滚动抑制：`scrollToIndex` 给目标 feed 打 `_progScrollUntil`（60ms）时间戳，scroll 处理函数忽略该窗口内的自触发事件；不再用全局 `suppressScroll`，因此用户快速连续滑动源 feed 也能被处理、不会漏掉回绕
 
 ### HLS 流式播放（m3u8 + ts，ffmpeg + hls.js）
-- **架构**：服务端 ffmpeg 生成 VOD 播放列表 + ts 分片（`obs/.hls/<name>/`），浏览器 hls.js（MSE）或 Safari 原生 HLS 播放；OBS 上传/下载/列表接口全部保留
+- **架构**：服务端 ffmpeg 生成 VOD 播放列表 + ts 分片（**独立 `hls/<name>/` 文件夹**，不污染 `obs/`），浏览器 hls.js（MSE）或 Safari 原生 HLS 播放；OBS 上传/下载/列表接口全部保留
 - **ffmpeg 参数**：`-f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`；**必须在分段临时目录里以 `cwd` 运行**（`runFfmpeg` 支持 `opts.cwd`），否则 m3u8 会写绝对分段名
 - **快速 remux vs 重编码**：ffprobe 探测首路 codec；`h264 + (aac|mp3)` → `-c copy`（不重编码、无质量损失）；webm/vp9/opus 等 → `libx264 -crf 23 -preset medium -pix_fmt yuv420p -vf scale='min(1920,iw)':-2 -c:a aac -b:a 128k`
-- **in-flight 锁**：`hlsLocks` Map（name → Promise）去重，并发同视频只跑一个 ffmpeg；输出 `obs/.hls/.tmp-*` 成功后 rename 为 `obs/.hls/<name>/`；生成前/后检查源文件仍在（防删除竞态）；失败清理临时目录；`withTimeout(p, 60s)` 兜底；启动时 `mkdirSync(HLS_DIR)` + 清理遗留 `.tmp-*`
+- **in-flight 锁**：`hlsLocks` Map（name → Promise）去重，并发同视频只跑一个 ffmpeg；输出 `hls/.tmp-*` 成功后 rename 为 `hls/<name>/`；生成前/后检查源文件仍在（防删除竞态）；失败清理临时目录；`withTimeout(p, 60s)` 兜底；启动时 `mkdirSync(HLS_DIR)` + 清理遗留 `.tmp-*`；启动时顺带移除空的旧 `obs/.hls`（HLS 已迁到独立文件夹）
 - **生成时机**：上传 complete / 简单上传成功后 fire-and-forget 后台生成；删除 → `invalidateHls`；压缩非 skipped → `invalidateHls` + 重新生成；`GET /hls/<name>/index.m3u8` 时源在而分片缺失 → 惰性生成
 - **/videos 附加字段**：`hls: "/hls/<enc(name)>/index.m3u8"`、`hlsReady: hlsExists(name)`（原字段不动）
 - **/obs 解码修复**：`safeName(decodeURIComponent(...))`，否则中文/空格文件名的直连播放与 HLS 回退会 404
@@ -155,8 +155,8 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   - `manageHls()` 在 `updateVideoCache()` 末尾与 `setPage()`/`finishSwipe()` 中调用（覆盖 render/applyIndex/切页）
 - **NATIVE_HLS 检测坑**：Chromium/Firefox/Edge 对 `canPlayType('application/vnd.apple.mpegurl')` 都返回 `'maybe'` 但**不能播**；必须用 Safari UA 判定：`_canNativeHls && /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent)`，否则 Chromium 会误走原生 HLS 而黑屏
 - **vendor/hls.min.js**：必须存在于 `public/vendor/`（index.html 在 app.js 前引入）；缺失时 `HAS_HLSJS=false`，非 Safari 自动回退直连 mp4/webm；hls.min.js 的 UMD 会无条件覆盖 `window.Hls`，stub 测试需 `page.route("**/vendor/hls.min.js", abort)`
-- **「转HLS」按钮**：`.v-hls`（`right:130px`），`hlsReady` 时禁用并显示「已转HLS」；点击 POST `/hls/<enc(name)>/generate` → `loadFeed()`；`handleTap` 排除 `.v-hls`
-- **验证脚本**：`/tmp/verify_hls_server.py`（服务端全链路）、`/tmp/verify_hls_frontend_real.py`（真实 hls.js MSE 播放）、`/tmp/verify_hls_frontend_stub.py`（生命周期边界 / 错误回退 / Safari 原生）；headless Chromium 需 `--autoplay-policy=no-user-gesture-required` 才允许自动播放
+- **按钮位置（宿主要求）**：视频卡片的「压缩 / 删除」按钮只在**设置页**（页 2）显示——CSS `.page:not([data-page="2"]) .video-item .v-delete/.v-compress { display:none }`；中间 feed 与信息页无任何按钮。**单视频「转HLS」按钮已移除**，改为设置菜单内「全部转HLS」批量按钮（`#hlsAllBtn`）：POST `/hls/generate-all` → 轮询 `/videos` 看 `hlsReady` 进度（stall 4 次即停）→ `loadFeed()`；`handleTap` 只排除 `.v-delete`/`.v-compress`
+- **验证脚本**：`/tmp/verify_hls_server.py`（服务端全链路）、`/tmp/verify_hls_v2_server.py`（独立 hls/ 文件夹 + generate-all + 清理）、`/tmp/verify_hls_v2_frontend.py`（按钮位置 + 批量按钮 + 真实 hls.js 播放）、`/tmp/verify_hls_frontend_stub.py`（生命周期边界 / 错误回退 / Safari 原生）；headless Chromium 需 `--autoplay-policy=no-user-gesture-required` 才允许自动播放
 
 ## 日志整理流程
 
@@ -192,10 +192,12 @@ git log --format="%h %s" -1 >> logs/commit.txt
 - [ ] `DELETE /obs/:filename` → ok，删后 404
 - [ ] `POST /compress/:filename` → 200 `{ok,before,after,savedPct}`，输出为 H.264 + faststart（moov 在 mdat 前）；已压缩的小视频 → `skipped:true`
 - [ ] `GET /hls/<name>/index.m3u8` → 200 `application/vnd.apple.mpegurl` + Range 206；`seg-*.ts` → 200 `video/mp2t` + Range 206
-- [ ] `obs/.hls/<name>/` 有 `index.m3u8` + `seg-*.ts`；m3u8 含 `#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST` + 相对分段名（无绝对 URL）
-- [ ] `/videos` 返回 `hls` + `hlsReady`；上传后 `hlsReady` 后台自动变 true；DELETE 后 `obs/.hls/<name>/` 同步删除
+- [ ] `hls/<name>/` 有 `index.m3u8` + `seg-*.ts`（`obs/` 内无 `.hls`）；m3u8 含 `#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST` + 相对分段名（无绝对 URL）
+- [ ] `/videos` 返回 `hls` + `hlsReady`；上传后 `hlsReady` 后台自动变 true；DELETE 后 `hls/<name>/` 同步删除
+- [ ] `POST /hls/generate-all` → `{ok,total,pending}`；批量后全部视频 `hlsReady` true
 - [ ] `/hls` 路径穿越 `..%2F` → 400/404；非 `seg-\d+\.ts` 分段名 → 400/404
-- [ ] 前端真实 hls.js：`window.Hls` 存在、`/hls/` 分片被拉取、`currentTime` 前进、`转HLS` 按钮变「已转HLS」禁用
+- [ ] 前端真实 hls.js：`window.Hls` 存在、`/hls/` 分片被拉取、`currentTime` 前进
+- [ ] 前端按钮：页 0/1 无 `.v-delete`/`.v-compress`（display none），页 2 可见；DOM 中无 `.v-hls`；设置面板有 `#hlsAllBtn` 且点击触发 `/hls/generate-all`
 - [ ] 前端回退：hls.js 致命错误后 `video.src` 变回直连 mp4/webm、`_hlsFallback` 置位；Safari UA 下 `video.src` 以 `index.m3u8` 结尾
 - [ ] 路径穿越 `..%2F` → 404
 - [ ] `node --check server.js public/app.js` 语法通过
