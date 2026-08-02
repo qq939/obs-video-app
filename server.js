@@ -26,7 +26,9 @@ const OBS_DIR = path.join(WORKSPACE_DIR, 'obs');
 const UPLOAD_DIR = path.join(OBS_DIR, '.uploads');
 const PUBLIC_DIR = path.join(WORKSPACE_DIR, 'public');
 const TIMEOUT_MS = 3600 * 1000;
-const HLS_DIR = path.join(OBS_DIR, '.hls');
+// HLS output lives in its own top-level folder (sibling of obs/), so the
+// generated m3u8 + ts files never pollute the obs/ video storage.
+const HLS_DIR = path.join(WORKSPACE_DIR, 'hls');
 const HLS_TIMEOUT_MS = 60 * 1000;
 
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogv', '.mov', '.m4v', '.mkv']);
@@ -729,6 +731,23 @@ const server = http.createServer(async (req, res) => {
             }
         }
 
+        // ---- batch HLS generation: POST /hls/generate-all
+        // Kicks off background generation for every video that does not have
+        // HLS yet (the in-flight lock dedupes concurrent runs). Returns counts
+        // immediately; the frontend polls /videos for hlsReady progress.
+        if (method === 'POST' && p === '/hls/generate-all') {
+            const items = listVideoFiles();
+            let pending = 0;
+            for (const it of items) {
+                if (!hlsExists(it.name)) {
+                    pending++;
+                    generateHls(it.name).catch((e) => logLine('hls all gen failed:', e.message));
+                }
+            }
+            logLine(`hls generate-all: ${items.length} total, ${pending} pending`);
+            return sendJson(res, 200, { ok: true, total: items.length, pending });
+        }
+
         // ---- static frontend from public/
         if (method === 'GET' || method === 'HEAD') {
             let rel = p === '/' ? '/index.html' : p;
@@ -759,6 +778,14 @@ if (fs.existsSync(HLS_DIR)) {
     for (const f of fs.readdirSync(HLS_DIR)) {
         if (f.startsWith('.tmp-')) fs.rmSync(path.join(HLS_DIR, f), { recursive: true, force: true });
     }
+}
+// HLS used to live at obs/.hls; remove the legacy dir now that it is a
+// separate top-level folder (only if it is empty — never delete user files).
+const LEGACY_HLS = path.join(OBS_DIR, '.hls');
+if (fs.existsSync(LEGACY_HLS)) {
+    try {
+        if (fs.readdirSync(LEGACY_HLS).length === 0) fs.rmdirSync(LEGACY_HLS);
+    } catch (e) { /* ignore */ }
 }
 
 server.listen(PORT, '0.0.0.0', () => {
