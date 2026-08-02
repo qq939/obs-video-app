@@ -8,52 +8,36 @@
 </head>
 <body>
     <div id="viewport" class="viewport">
-        <!-- Three pages horizontally arranged (translateX). All share the same vertical video feed -->
-        <div id="pages" class="pages">
-
-            <!-- Page 0: main feed + playback info panel (swipe RIGHT to get here) -->
-            <section class="page" data-page="0">
-                <div class="feed" data-feed="0">
-                    <div class="empty-state"><div class="empty-icon">🎬</div><p>还没有视频</p><p class="sub">左滑到设置页点击 + 上传</p></div>
-                </div>
-                <aside class="side-panel info-panel" id="infoPanel">
-                    <div class="panel-head">播放信息</div>
-                    <div class="panel-body">
-                        <div class="info-row"><span>文件名</span><b id="infoName">-</b></div>
-                        <div class="info-row"><span>大小</span><b id="infoSize">-</b></div>
-                        <div class="info-row"><span>时间</span><b id="infoTime">-</b></div>
-                        <div class="info-row"><span>进度</span><b id="infoProgress">0%</b></div>
-                        <div class="info-row"><span>索引</span><b id="infoIndex">-</b></div>
-                    </div>
-                </aside>
-            </section>
-
-            <!-- Page 1: main feed (default) -->
-            <section class="page" data-page="1">
-                <div class="feed" data-feed="1">
-                    <div class="empty-state"><div class="empty-icon">🎬</div><p>还没有视频</p><p class="sub">左滑到设置页点击 + 上传</p></div>
-                </div>
-                <div class="page-dot" id="pageDot"></div>
-            </section>
-
-            <!-- Page 2: main feed + settings menu + upload button (swipe LEFT to get here) -->
-            <section class="page" data-page="2">
-                <div class="feed" data-feed="2">
-                    <div class="empty-state"><div class="empty-icon">🎬</div><p>还没有视频</p><p class="sub">点击左下角 + 上传视频</p></div>
-                </div>
-                <aside class="side-panel settings-panel" id="settingsPanel">
-                    <div class="panel-head">设置</div>
-                    <div class="panel-body">
-                        <div class="setting-row"><span>视频数量</span><b id="videoCount">0</b></div>
-                        <div class="setting-row"><span>随机播放</span><label class="switch"><input type="checkbox" id="randomSwitch" checked><i></i></label></div>
-                        <div class="setting-row"><span>自动播放</span><label class="switch"><input type="checkbox" id="autoplaySwitch" checked><i></i></label></div>
-                        <button class="upload-panel-btn" id="uploadPanelBtn">＋ 上传视频</button>
-                        <button class="refresh-btn" id="refreshBtn">↻ 刷新列表</button>
-                    </div>
-                </aside>
-                <button class="upload-btn" id="uploadBtn" title="上传视频">＋</button>
-            </section>
+        <div class="feed" id="mainFeed">
+            <div class="empty-state"><div class="empty-icon">🎬</div><p>还没有视频</p><p class="sub">左滑打开设置上传</p></div>
         </div>
+
+        <div class="panel-mask" id="panelMask"></div>
+
+        <aside class="side-panel info-panel" id="infoPanel">
+            <div class="panel-head">播放信息</div>
+            <div class="panel-body">
+                <div class="info-row"><span>文件名</span><b id="infoName">-</b></div>
+                <div class="info-row"><span>大小</span><b id="infoSize">-</b></div>
+                <div class="info-row"><span>时间</span><b id="infoTime">-</b></div>
+                <div class="info-row"><span>进度</span><b id="infoProgress">0%</b></div>
+                <div class="info-row"><span>索引</span><b id="infoIndex">-</b></div>
+            </div>
+        </aside>
+
+        <aside class="side-panel settings-panel" id="settingsPanel">
+            <div class="panel-head">设置</div>
+            <div class="panel-body">
+                <div class="setting-row"><span>视频数量</span><b id="videoCount">0</b></div>
+                <div class="setting-row"><span>随机播放</span><label class="switch"><input type="checkbox" id="randomSwitch" checked><i></i></label></div>
+                <div class="setting-row"><span>自动播放</span><label class="switch"><input type="checkbox" id="autoplaySwitch" checked><i></i></label></div>
+                <button class="upload-panel-btn" id="uploadPanelBtn">＋ 上传视频</button>
+                <button class="refresh-btn" id="refreshBtn">↻ 刷新列表</button>
+            </div>
+        </aside>
+
+        <button class="upload-btn" id="uploadBtn" title="上传视频">＋</button>
+        <button class="info-toggle-btn" id="infoToggle" title="播放信息">ℹ</button>
     </div>
 
     <!-- Upload modal -->
