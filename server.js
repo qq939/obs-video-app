@@ -26,6 +26,8 @@ const OBS_DIR = path.join(WORKSPACE_DIR, 'obs');
 const UPLOAD_DIR = path.join(OBS_DIR, '.uploads');
 const PUBLIC_DIR = path.join(WORKSPACE_DIR, 'public');
 const TIMEOUT_MS = 3600 * 1000;
+const HLS_DIR = path.join(OBS_DIR, '.hls');
+const HLS_TIMEOUT_MS = 60 * 1000;
 
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogv', '.mov', '.m4v', '.mkv']);
 const MIME = {
@@ -35,6 +37,8 @@ const MIME = {
     '.mov': 'video/quicktime',
     '.m4v': 'video/x-m4v',
     '.mkv': 'video/x-matroska',
+    '.m3u8': 'application/vnd.apple.mpegurl',
+    '.ts': 'video/mp2t',
     '.js': 'application/javascript',
     '.css': 'text/css',
     '.html': 'text/html; charset=utf-8',
@@ -122,9 +126,11 @@ function sha256File(filePath) {
  * moved to the front (+faststart). This is the same approach YouTube/Douyin
  * use for browser playback: broad codec compatibility + instant start.
  */
-function runFfmpeg(args) {
+function runFfmpeg(args, opts = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        const spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'] };
+        if (opts.cwd) spawnOpts.cwd = opts.cwd;
+        const child = spawn('ffmpeg', args, spawnOpts);
         let stderr = '';
         child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (err) => reject(new Error('ffmpeg not available: ' + err.message)));
@@ -163,13 +169,137 @@ async function compressVideo(filePath) {
     return { skipped: false, before, after, saved: before - after, savedPct: Math.round((1 - after / before) * 100) };
 }
 
+// ---------------------------------------------------------------- HLS
+
+function hlsExists(name) {
+    return fs.existsSync(path.join(HLS_DIR, name, 'index.m3u8'));
+}
+
+function invalidateHls(name) {
+    fs.rmSync(path.join(HLS_DIR, name), { recursive: true, force: true });
+}
+
+/** Probe the first video/audio codec of a media file via ffprobe. */
+function detectCodecs(filePath) {
+    return new Promise((resolve, reject) => {
+        const child = spawn('ffprobe', [
+            '-v', 'error',
+            '-show_entries', 'stream=codec_type,codec_name',
+            '-of', 'json',
+            filePath
+        ], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let out = '', err = '';
+        child.stdout.on('data', (d) => { out += d.toString(); });
+        child.stderr.on('data', (d) => { err += d.toString(); });
+        child.on('error', (e) => reject(new Error('ffprobe unavailable: ' + e.message)));
+        child.on('close', (code) => {
+            if (code !== 0) return reject(new Error('ffprobe failed: ' + err.split('\n').slice(-2).join(' ').trim()));
+            try {
+                const j = JSON.parse(out);
+                let video = null, audio = null;
+                for (const s of (j.streams || [])) {
+                    if (s.codec_type === 'video' && !video) video = s.codec_name;
+                    if (s.codec_type === 'audio' && !audio) audio = s.codec_name;
+                }
+                resolve({ video, audio });
+            } catch (e) { reject(e); }
+        });
+    });
+}
+
+/** Fast path: source already H.264 + AAC/MP3 can be remuxed to TS without re-encoding. */
+function canRemux({ video, audio }) {
+    return video === 'h264' && (audio === 'aac' || audio === 'mp3');
+}
+
+/**
+ * Build ffmpeg args. Runs with cwd=outDir so the playlist references relative
+ * `seg-%05d.ts` names that resolve under /hls/<name>/ automatically.
+ * VOD + hls_list_size 0 keeps ALL segments in the (finite) playlist.
+ */
+function buildHlsArgs(srcPath, codecs) {
+    const mapV = ['-map', '0:v:0'];
+    const mapA = codecs.audio ? ['-map', '0:a:0'] : [];
+    const common = [
+        '-f', 'hls',
+        '-hls_time', '4',
+        '-hls_list_size', '0',
+        '-hls_playlist_type', 'vod',
+        '-hls_segment_filename', 'seg-%05d.ts',
+        'index.m3u8'
+    ];
+    if (canRemux(codecs)) {
+        return ['-y', '-i', srcPath, ...mapV, ...mapA, '-c', 'copy', ...common];
+    }
+    // webm/ogv/mkv (VP9/VP8/Opus/AV1) and anything not H.264+AAC -> re-encode to H.264/AAC.
+    const venc = ['-c:v', 'libx264', '-preset', 'medium', '-crf', '23', '-pix_fmt', 'yuv420p', '-vf', "scale='min(1920,iw)':-2"];
+    const aenc = codecs.audio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an'];
+    return ['-y', '-i', srcPath, ...mapV, ...mapA, ...venc, ...aenc, ...common];
+}
+
+function countSegments(dir) {
+    try {
+        return fs.readdirSync(dir).filter((f) => /^seg-\d+\.ts$/.test(f)).length;
+    } catch (e) { return 0; }
+}
+
+// name -> in-flight generation Promise, so concurrent /hls requests for the
+// same not-yet-generated video only run one ffmpeg.
+const hlsLocks = new Map();
+
+function generateHls(name) {
+    if (hlsLocks.has(name)) return hlsLocks.get(name);
+    const p = doGenerateHls(name).finally(() => hlsLocks.delete(name));
+    hlsLocks.set(name, p);
+    return p;
+}
+
+async function doGenerateHls(name) {
+    const srcPath = path.join(OBS_DIR, name);
+    if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) {
+        throw new Error('source missing');
+    }
+    if (hlsExists(name)) return;
+
+    const tmpDir = path.join(HLS_DIR, `.tmp-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
+    fs.mkdirSync(tmpDir, { recursive: true });
+    try {
+        const codecs = await detectCodecs(srcPath);
+        await runFfmpeg(buildHlsArgs(srcPath, codecs), { cwd: tmpDir });
+        // Source may have been deleted while ffmpeg was running.
+        if (!fs.existsSync(srcPath)) throw new Error('source deleted during hls generation');
+        if (hlsExists(name)) {
+            fs.rmSync(tmpDir, { recursive: true, force: true });   // lost a race, keep existing
+            return;
+        }
+        fs.rmSync(path.join(HLS_DIR, name), { recursive: true, force: true }); // clear stale
+        fs.renameSync(tmpDir, path.join(HLS_DIR, name));
+        logLine(`hls generated: ${name} (${countSegments(path.join(HLS_DIR, name))} segs)`);
+    } catch (e) {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        throw e;
+    }
+}
+
+function withTimeout(p, ms) {
+    return Promise.race([
+        p,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('hls generation timeout')), ms))
+    ]);
+}
+
 function listVideoFiles() {
     if (!fs.existsSync(OBS_DIR)) return [];
     const items = fs.readdirSync(OBS_DIR)
         .filter((f) => VIDEO_EXTS.has(path.extname(f).toLowerCase()) && !f.startsWith('.'))
         .map((name) => {
             const stat = fs.statSync(path.join(OBS_DIR, name));
-            return { name, size: stat.size, mtime: stat.mtime, url: `/obs/${encodeURIComponent(name)}` };
+            return {
+                name, size: stat.size, mtime: stat.mtime,
+                url: `/obs/${encodeURIComponent(name)}`,
+                hls: `/hls/${encodeURIComponent(name)}/index.m3u8`,
+                hlsReady: hlsExists(name)
+            };
         });
     // 随机顺序（Fisher–Yates）
     for (let i = items.length - 1; i > 0; i--) {
@@ -448,6 +578,8 @@ const server = http.createServer(async (req, res) => {
             if (!isUploadId(uploadId)) return sendJson(res, 400, { error: 'bad uploadId' });
             const result = await completeUpload(uploadId);
             if (result.error) return sendJson(res, result.error.status, { error: result.error.msg });
+            const fname = safeName(decodeURIComponent(result.url.replace(/^\/obs\//, '')));
+            if (fname) generateHls(fname).catch((e) => logLine('hls bg gen failed:', e.message));
             return sendJson(res, 200, result);
         }
 
@@ -469,13 +601,16 @@ const server = http.createServer(async (req, res) => {
             fs.renameSync(tmpPath, path.join(OBS_DIR, filename));
             const size = fs.statSync(path.join(OBS_DIR, filename)).size;
             logLine(`simple upload: ${filename} (${size} bytes)`);
+            generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
             return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
         }
 
         // ---- video streaming: GET/HEAD /obs/:filename
         const obsMatch = p.match(/^\/obs\/(.+)$/);
         if ((method === 'GET' || method === 'HEAD') && obsMatch) {
-            const filename = safeName(obsMatch[1]);
+            let filename;
+            try { filename = safeName(decodeURIComponent(obsMatch[1])); }
+            catch (e) { return sendText(res, 400, 'invalid filename'); }
             if (!filename) return sendText(res, 400, 'invalid filename');
             const filePath = path.join(OBS_DIR, filename);
             if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
@@ -500,11 +635,14 @@ const server = http.createServer(async (req, res) => {
 
         // ---- delete: DELETE /obs/:filename
         if (method === 'DELETE' && obsMatch) {
-            const filename = safeName(obsMatch[1]);
+            let filename;
+            try { filename = safeName(decodeURIComponent(obsMatch[1])); }
+            catch (e) { return sendJson(res, 400, { error: 'invalid filename' }); }
             if (!filename) return sendJson(res, 400, { error: 'invalid filename' });
             const filePath = path.join(OBS_DIR, filename);
             if (!fs.existsSync(filePath)) return sendJson(res, 404, { error: 'Not Found' });
             fs.unlinkSync(filePath);
+            invalidateHls(filename);
             logLine(`deleted: ${filename}`);
             return sendJson(res, 200, { ok: true });
         }
@@ -521,7 +659,74 @@ const server = http.createServer(async (req, res) => {
             logLine(`compress start: ${filename}`);
             const result = await compressVideo(filePath);
             logLine(`compress done: ${filename} ${result.before} -> ${result.after} bytes (${result.savedPct}% saved)`);
+            if (!result.skipped) {
+                invalidateHls(filename);
+                generateHls(filename).catch((e) => logLine('hls regen after compress failed:', e.message));
+            }
             return sendJson(res, 200, { ok: true, ...result });
+        }
+
+        // ---- HLS playlist (lazy generation): GET/HEAD /hls/:name/index.m3u8
+        const hlsM3u8 = p.match(/^\/hls\/(.+)\/index\.m3u8$/);
+        if ((method === 'GET' || method === 'HEAD') && hlsM3u8) {
+            let name;
+            try { name = safeName(decodeURIComponent(hlsM3u8[1])); }
+            catch (e) { return sendText(res, 400, 'bad name'); }
+            if (!name) return sendText(res, 400, 'invalid name');
+            const srcPath = path.join(OBS_DIR, name);
+            if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) return sendText(res, 404, 'Not Found');
+            try {
+                await withTimeout(generateHls(name), HLS_TIMEOUT_MS);
+            } catch (e) {
+                logLine('hls lazy gen:', e.message);
+                return sendText(res, 404, 'HLS not ready');
+            }
+            const m3u8Path = path.join(HLS_DIR, name, 'index.m3u8');
+            if (!fs.existsSync(m3u8Path)) return sendText(res, 404, 'HLS not available');
+            if (method === 'HEAD') {
+                const st = fs.statSync(m3u8Path);
+                res.writeHead(200, { 'Content-Length': st.size, 'Content-Type': 'application/vnd.apple.mpegurl' });
+                return res.end();
+            }
+            return streamFileWithRange(res, m3u8Path, req.headers.range);
+        }
+
+        // ---- HLS segments: GET/HEAD /hls/:name/seg-NNNNN.ts
+        const hlsSeg = p.match(/^\/hls\/(.+)\/(seg-\d+\.ts)$/);
+        if ((method === 'GET' || method === 'HEAD') && hlsSeg) {
+            let name;
+            try { name = safeName(decodeURIComponent(hlsSeg[1])); }
+            catch (e) { return sendText(res, 400, 'bad name'); }
+            if (!name) return sendText(res, 400, 'invalid name');
+            const seg = hlsSeg[2];
+            const segPath = path.join(HLS_DIR, name, seg);
+            if (!segPath.startsWith(path.join(HLS_DIR, name) + path.sep)) return sendText(res, 400, 'bad path');
+            if (!fs.existsSync(segPath) || !fs.statSync(segPath).isFile()) return sendText(res, 404, 'Not Found');
+            if (method === 'HEAD') {
+                const st = fs.statSync(segPath);
+                res.writeHead(200, { 'Content-Length': st.size, 'Content-Type': 'video/mp2t', 'Accept-Ranges': 'bytes' });
+                return res.end();
+            }
+            return streamFileWithRange(res, segPath, req.headers.range);
+        }
+
+        // ---- manual HLS generation: POST /hls/:name/generate
+        const hlsGen = p.match(/^\/hls\/(.+)\/generate$/);
+        if (method === 'POST' && hlsGen) {
+            let name;
+            try { name = safeName(decodeURIComponent(hlsGen[1])); }
+            catch (e) { return sendJson(res, 400, { error: 'bad name' }); }
+            if (!name) return sendJson(res, 400, { error: 'invalid name' });
+            const srcPath = path.join(OBS_DIR, name);
+            if (!fs.existsSync(srcPath) || !fs.statSync(srcPath).isFile()) return sendJson(res, 404, { error: 'Not Found' });
+            try {
+                const t0 = Date.now();
+                await generateHls(name);
+                logLine(`hls generate done: ${name} in ${Date.now() - t0}ms`);
+                return sendJson(res, 200, { ok: true, name, hls: `/hls/${encodeURIComponent(name)}/index.m3u8` });
+            } catch (e) {
+                return sendJson(res, 500, { error: 'hls generation failed: ' + e.message });
+            }
         }
 
         // ---- static frontend from public/
@@ -549,6 +754,12 @@ const server = http.createServer(async (req, res) => {
 fs.mkdirSync(OBS_DIR, { recursive: true });
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 fs.mkdirSync(PUBLIC_DIR, { recursive: true });
+fs.mkdirSync(HLS_DIR, { recursive: true });
+if (fs.existsSync(HLS_DIR)) {
+    for (const f of fs.readdirSync(HLS_DIR)) {
+        if (f.startsWith('.tmp-')) fs.rmSync(path.join(HLS_DIR, f), { recursive: true, force: true });
+    }
+}
 
 server.listen(PORT, '0.0.0.0', () => {
     logLine(`OBS web app running on port ${PORT} (obs dir: ${OBS_DIR})`);

@@ -118,6 +118,24 @@ html, body {
     opacity: .5;
     cursor: default;
 }
+.video-item .v-hls {
+    position: absolute;
+    top: 14px;
+    right: 130px;
+    z-index: 6;
+    background: rgba(0,0,0,.45);
+    border: none;
+    color: #fff;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+}
+.video-item .v-hls[disabled] {
+    opacity: .5;
+    cursor: default;
+}
 
 /* ---------------- empty state ---------------- */
 .empty-state {
