@@ -161,22 +161,34 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 | ~~`/hls/:name/generate`~~ | ~~POST~~ | **已移除**——全自动无手动触发 |
 
 ### 关键 ffmpeg 参数
-- 无旋转 / h264 + aac/mp3：`ffmpeg -i input -c copy -f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（**快速 remux，无损**）
-- 有旋转 / webm/vp9：必须 `-c:v libx264 -c:a aac` 重编码（**带旋转走重编码**，让 ffmpeg 内置 autorotation 把旋转烘焙进像素，避免 hls.js/MSE 忽略 SEI 的副作用）
+- **段大小按字节切（最新）**：`ffmpeg -i input -c copy -f hls -hls_segment_size 52428800 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（每段目标 50 MiB，GOP 对齐；ffmpeg 5.1.9+ 原生支持 `-hls_segment_size`，比 `-hls_time` 切段大很多）
+- 无旋转 / h264 + aac/mp3 / `.mp4` 或 `.m4v` 容器 → `-c copy` **快速 remux，无损**
+- 有旋转 / webm/vp9 / **`.mov` 或 `.mkv`** → 必须 `-c:v libx264 -c:a aac` 重编码
 - `cwd` 设为 HLS 临时目录，分片名用相对路径
 
 ### 旋转 90° 根因与修复（核心 debug insight）
 - **根因**：iPhone 拍摄的 `.mov` 通常带 Display Matrix（`stream_side_data.rotation = -90`）；`-c copy` remux 写到 TS 的 SEI 里，**hls.js/MSE 不解析 SEI**，原始像素按 1920x1440 横屏播出 → 看起来旋转 90°
 - **检测**：`detectRotation(filePath)` 用 ffprobe 读 `stream_tags.rotate` 或 `side_data_list[].rotation`，归一化为 0/90/180/270
-- **修复**：`canRemux(codecs, rotation)` 在 `rotation !== 0` 时返回 false，强制走重编码 —— ffmpeg 默认解码阶段就自动转正，输出 1440x1920 竖屏，无旋转副作用数据
+- **修复**：`canRemux(srcPath, codecs, rotation)` 在 `rotation !== 0` 时返回 false，强制走重编码 —— ffmpeg 默认解码阶段就自动转正，输出 1440x1920 竖屏，无旋转副作用数据
+
+### `.mov` 播放不流畅
+- QuickTime 容器常见问题：moov atom 不在头部（`-c copy` 输出仍是 non-faststart），codec tag 写法不标准；hls.js/MSE 读 TS 时遇到这些问题会卡顿
+- 解决：`.mov` / `.mkv` 一律重编码为 H.264/AAC，不再走 `-c copy` remux 快速路径
+- 前端 `<source type="video/quicktime">` 让浏览器原生支持 mov 直接播放（HLS 生成中或失败时的 fallback）
 
 ### 全自动 + meta.json 版本
-- `HLS_GEN_VERSION = 2`（每次特性变更 +1，让所有资产自动重生成）
+- `HLS_GEN_VERSION = 3`（每次特性变更 +1，让所有资产自动重生成）
 - 每个 `hls/<name>/meta.json` 存 `{version, size, mtime, rotation}`
 - `hlsExists(name)` 校验：`index.m3u8` 存在 + `meta.version === HLS_GEN_VERSION` + `meta.size === srcSize`
 - 启动时 `setImmediate` 扫描全部视频，缺失/过期者后台补齐
+- **每日 24:00 cron**（server.js 进程内 `setInterval` 30 s 粒度，`lastCronKey` 防重入）：扫描 obs/，对没有当前版本 HLS 的视频后台补齐（容器无 crontab；进程内定时与 `user_start.sh` 重启同寿命）
 - 路径：`hls/` 顶层独立目录（与 `obs/` 平级），不污染 `obs/`
 - `.gitignore` 需包含 `hls/`
+
+### 播放优先级（hls > obs）
+- `<video>` 用 `<source>` 列表：第一个是 `/hls/<name>/index.m3u8`（`application/vnd.apple.mpegurl`，仅当 `v.hlsReady === true`），第二个是 `/obs/<name>`（按扩展名给正确 mime）
+- 浏览器原生处理 fallback：m3u8 加载失败自动尝试下一个 source；hls.js attach 仍走 `manageHls()` 路径，错误回退由 `_hlsFallback` 标记防重挂
+- `/videos` 接口返回 `{url, hls, hlsReady}`；前端直接据此决定 source 顺序
 
 ### 前端生命周期
 - `public/vendor/hls.min.js`（hls.js 1.5.13，jsdelivr 下载）由 `index.html` 引入

@@ -35,7 +35,12 @@ const HLS_TIMEOUT_MS = 60 * 1000;
 // ready when it matches. Bumping the version (or the source changing) makes
 // every asset regenerate automatically — every feature change applies to all
 // videos, no manual "转HLS" button needed.
-const HLS_GEN_VERSION = 2;
+const HLS_GEN_VERSION = 3;
+// 50 MiB per TS segment. ffmpeg HLS muxer supports byte-based segmentation
+// (-hls_segment_size); GOP-aligned so the actual segment size may vary a bit,
+// but the average stays close to 50 MiB. No time-based fallback: user explicitly
+// asked for size-based chunking.
+const HLS_SEGMENT_BYTES = 50 * 1024 * 1024;
 
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogv', '.mov', '.m4v', '.mkv']);
 const MIME = {
@@ -275,31 +280,43 @@ function detectRotation(filePath) {
     });
 }
 
-/** Fast path: source already H.264 + AAC/MP3 AND upright can be remuxed to TS without re-encoding. */
-function canRemux({ video, audio }, rotation) {
-    return rotation === 0 && video === 'h264' && (audio === 'aac' || audio === 'mp3');
+/** Fast path: source already H.264 + AAC/MP3 AND upright AND a friendly container
+ * (.mp4 / .m4v) can be remuxed to TS without re-encoding.
+ *   - .mov / .mkv: always re-encode. QuickTime often has the moov atom at the
+ *     tail (not faststart) and inconsistent codec tags; remuxing the TS keeps
+ *     both issues, so playback through hls.js/MSE stutters.
+ *   - webm/ogv: always re-encode (not H.264).
+ */
+function canRemux(srcPath, codecs, rotation) {
+    if (rotation !== 0) return false;
+    if (codecs.video !== 'h264') return false;
+    if (codecs.audio && codecs.audio !== 'aac' && codecs.audio !== 'mp3') return false;
+    const ext = path.extname(srcPath).toLowerCase();
+    return ext === '.mp4' || ext === '.m4v';
 }
 
 /**
  * Build ffmpeg args. Runs with cwd=outDir so the playlist references relative
  * `seg-%05d.ts` names that resolve under /hls/<name>/ automatically.
  * VOD + hls_list_size 0 keeps ALL segments in the (finite) playlist.
- * Rotated sources always re-encode: ffmpeg's built-in autorotation (inserted
- * before the -vf graph) bakes the rotation into the pixels, so hls.js/MSE
- * players see the upright image instead of a 90°-rotated one.
+ * Size-based segmentation: -hls_segment_size caps each TS at 50 MiB (GOP-aligned,
+ * actual size may vary slightly). Rotated sources always re-encode: ffmpeg's
+ * built-in autorotation (inserted before the -vf graph) bakes the rotation into
+ * the pixels, so hls.js/MSE players see the upright image instead of a
+ * 90°-rotated one.
  */
 function buildHlsArgs(srcPath, codecs, rotation) {
     const mapV = ['-map', '0:v:0'];
     const mapA = codecs.audio ? ['-map', '0:a:0'] : [];
     const common = [
         '-f', 'hls',
-        '-hls_time', '4',
+        '-hls_segment_size', String(HLS_SEGMENT_BYTES),
         '-hls_list_size', '0',
         '-hls_playlist_type', 'vod',
         '-hls_segment_filename', 'seg-%05d.ts',
         'index.m3u8'
     ];
-    if (canRemux(codecs, rotation)) {
+    if (canRemux(srcPath, codecs, rotation)) {
         return ['-y', '-i', srcPath, ...mapV, ...mapA, '-c', 'copy', ...common];
     }
     // Rotated, webm/ogv/mkv (VP9/VP8/Opus/AV1) and anything not H.264+AAC
@@ -856,3 +873,29 @@ setImmediate(() => {
         }
     }
 });
+
+// Daily 24:00 cron: re-scan obs/ and generate HLS for any video that doesn't
+// have a current-version HLS. Implemented in-process because the container
+// doesn't ship crontab (and even if it did, an in-process timer survives restarts
+// since user_start.sh re-launches server.js). One shot per day, fired once.
+const DAILY_CRON_HOUR = 0;       // 24:00 (start of new day) in local time
+const DAILY_CRON_MIN  = 0;
+let lastCronKey = '';            // 'YYYY-MM-DD' of the last successful fire
+function dailyCronTick() {
+    const now = new Date();
+    if (now.getHours() !== DAILY_CRON_HOUR || now.getMinutes() !== DAILY_CRON_MIN) return;
+    const key = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}`;
+    if (key === lastCronKey) return;
+    lastCronKey = key;
+    logLine(`daily 24:00 cron: scanning obs/ for missing HLS (${key})`);
+    let queued = 0;
+    for (const it of listVideoFiles()) {
+        if (!hlsExists(it.name)) {
+            generateHls(it.name).catch((e) => logLine('hls cron gen failed:', e.message));
+            queued++;
+        }
+    }
+    logLine(`daily 24:00 cron: queued ${queued} video(s) for HLS generation`);
+}
+// 30 s granularity is enough (cron fires within the first minute of 00:00).
+setInterval(dailyCronTick, 30 * 1000).unref();
