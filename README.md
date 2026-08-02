@@ -22,7 +22,7 @@
 - 📡 **HTTP Range 流式播放**：支持 `206 Partial Content`，浏览器可拖拽进度条
 - 🗑️ **删除视频**：视频卡片右上角一键删除
 - 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传；视频卡片「压缩」按钮则一键服务端转码为 H.264/AAC MP4（`ffmpeg` + `+faststart`），体积更小、浏览器秒开
-- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；上传自动后台生成、设置页可一键「全部转HLS」，hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）
+- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / 服务启动时对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
@@ -140,20 +140,22 @@ project/
 
 ### 7. HLS 流式播放（m3u8 + ts）
 
-服务端用 ffmpeg 把视频切成 4s 的 ts 分片并生成 VOD 播放列表（`hls/<name>/index.m3u8` + `seg-*.ts`，**独立文件夹，不污染 `obs/`**），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。OBS 上传 / 下载 / 列表接口全部保留。
+服务端用 ffmpeg 把视频切成 4s 的 ts 分片并生成 VOD 播放列表（`hls/<name>/index.m3u8` + `seg-*.ts`，**独立文件夹，不污染 `obs/`**），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。**HLS 全自动生成，无任何「转HLS」按钮**。OBS 上传 / 下载 / 列表接口全部保留。
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/hls/:name/index.m3u8` | GET / HEAD | 播放列表（`application/vnd.apple.mpegurl`），支持 Range；源文件存在但分片缺失时**自动惰性生成** |
+| `/hls/:name/index.m3u8` | GET / HEAD | 播放列表（`application/vnd.apple.mpegurl`），支持 Range；源文件存在但分片缺失/版本过期时**自动惰性生成** |
 | `/hls/:name/seg-NNNNN.ts` | GET / HEAD | ts 分片（`video/mp2t`），支持 Range；严格 `seg-\d+\.ts` 正则防穿越 |
-| `/hls/:name/generate` | POST | 单个视频生成（阻塞式），返回 `{ ok, name, hls }` |
-| `/hls/generate-all` | POST | **批量生成**：为所有未生成 HLS 的视频后台生成，返回 `{ ok, total, pending }`（前端「全部转HLS」按钮调用后轮询 `/videos` 看进度） |
+
+> 无手动 HLS 接口：生成完全自动化（上传完成 / 压缩后 / 服务启动时对所有资产后台扫描）。
 
 生成规则：
 
-- H.264 + AAC/MP3 → `-c copy` **快速 remux**（不重编码、无质量损失）；其它（webm/vp9 等）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`
+- **H.264 + AAC/MP3 且无旋转元数据** → `-c copy` **快速 remux**（不重编码、无质量损失）；**带旋转元数据的视频**（如 iPhone MOV 的 Display Matrix）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`，ffmpeg 内置 autorotation 把旋转**烘焙进像素**（否则 `-c copy` 只把旋转写成 TS 显示矩阵 SEI，hls.js/MSE 忽略导致视频旋转 90°）
+- 其它（webm/vp9 等）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`
 - 统一参数：`-f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（VOD，全量保留分片）
-- 上传完成 / 压缩后自动后台生成；删除视频同时删除 `hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
+- 每个 `hls/<name>/` 内写 `meta.json`（`{ version, size, rotation }`）；`/videos` 的 `hlsReady` 仅在分片存在 **且** 版本匹配 **且** 源文件大小一致时为真——版本升级或源文件变化会让所有资产自动重新生成（**每个变更都赋予所有资产**）
+- 生成时机：上传完成 / 压缩后自动后台生成；**服务启动时扫描全部视频**，缺失或过期者后台补齐；删除视频同时删除 `hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
 - m3u8 使用**相对分段名**（ffmpeg 在分段临时目录内运行），自动解析到 `/hls/<name>/` 下
 
 前端：
@@ -162,7 +164,7 @@ project/
 - 仅中间副本且在缓存窗口内的视频挂 hls.js；leader `startLoad()`、非 leader `stopLoad()`（避免后台狂拉分片）
 - hls.js 致命错误：网络错误重试 1 次 → 媒体错误 `recoverMediaError()` 1 次 → 仍失败则销毁实例并回退直连 mp4/webm（`_hlsFallback` 防重挂循环）
 - Safari 原生 HLS：`NATIVE_HLS` 仅当 UA 为 Safari 且 `canPlayType('application/vnd.apple.mpegurl')` 为真（Chromium/Firefox/Edge 也报告 `maybe` 但无法播放，需用 UA 排除）
-- **按钮位置**：视频卡片的「压缩 / 删除」按钮只在**设置页**（页 2）显示，信息页与中间 feed 保持干净；设置菜单内新增「全部转HLS」一键批量转换
+- **按钮位置**：视频卡片的「压缩 / 删除」按钮只在**设置页**（页 2）显示，信息页与中间 feed 保持干净；HLS 全自动、设置页也无「转HLS」按钮
 
 ### 8. 平台接口
 
