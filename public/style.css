@@ -21,7 +21,10 @@ html, body {
     position: absolute;
     inset: 0;
     background: #000;
-    pointer-events: auto;
+    /* 视频层不接收指针事件，让 wheel/touch 命中下方的 feed，
+       恢复浏览器原生垂直滚动（滚动链不再被全屏覆盖层截断）。
+       需要交互的元素（如设置页按钮）单独开启 pointer-events。 */
+    pointer-events: none;
 }
 
 .video-container video {

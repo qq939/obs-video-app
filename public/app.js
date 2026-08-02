@@ -435,6 +435,7 @@
     const PAGE_COUNT = 3;
 
     let swipeStartX = 0, swipeStartY = 0, swipeMoved = false;
+    let verticalMoved = false;   // true if user scrolled vertically (skip tap)
     let swipeStartTime = 0;
     // Rubber-band resistance at page edges
     function dragOffset(dx) {
@@ -507,6 +508,7 @@
         const t = e.touches[0];
         swipeStartX = t.clientX; swipeStartY = t.clientY;
         swipeStartTime = Date.now(); swipeMoved = false;
+        verticalMoved = false;
         longPressMoved = false;
         longPressTimer = setTimeout(() => {
             longPressTimer = null;
@@ -536,6 +538,7 @@
             beginDrag(dx);
             edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
         } else if (Math.abs(dy) > 12) {
+            verticalMoved = true;
             edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
         }
     }, { passive: true });
@@ -545,7 +548,7 @@
         const t = e.changedTouches[0];
         edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
         const handled = finishSwipe(t.clientX, t.clientY);
-        if (!handled) handleTap(e);
+        if (!handled && !verticalMoved) handleTap(e);
     }, { passive: true });
 
     // ---- Mouse ----
@@ -554,6 +557,7 @@
         mouseDown = true;
         swipeStartX = e.clientX; swipeStartY = e.clientY;
         swipeStartTime = Date.now(); swipeMoved = false;
+        verticalMoved = false;
         longPressTimer = setTimeout(() => {
             longPressTimer = null;
             if (currentPage === 1) {
@@ -570,13 +574,13 @@
             clearTimeout(longPressTimer); longPressTimer = null;
         }
         if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) beginDrag(dx);
-        else if (Math.abs(dy) > 12) { /* vertical scroll */ }
+        else if (Math.abs(dy) > 12) { verticalMoved = true; /* vertical scroll */ }
     });
     viewport.addEventListener('mouseup', (e) => {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
         if (!mouseDown) return;
         mouseDown = false;
-        if (!finishSwipe(e.clientX, e.clientY)) handleTap(e);
+        if (!finishSwipe(e.clientX, e.clientY) && !verticalMoved) handleTap(e);
     });
 
     // First interaction unlocks audio
