@@ -9,16 +9,108 @@ html, body {
     -webkit-tap-highlight-color: transparent;
 }
 
-/* ---------------- viewport ---------------- */
+/* ---------------- single shared player (outside pages) ---------------- */
+#playerLayer {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+}
+
+.video-container {
+    position: absolute;
+    inset: 0;
+    background: #000;
+    pointer-events: auto;
+}
+
+.video-container video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+
+.video-container .v-label {
+    position: absolute;
+    left: 14px;
+    bottom: 30px;
+    right: 14px;
+    z-index: 6;
+    font-size: 15px;
+    font-weight: 600;
+    text-shadow: 0 1px 4px rgba(0,0,0,.8);
+    word-break: break-all;
+    pointer-events: none;
+}
+
+/* Overlay buttons: only show when on settings page (currentPage === 2) */
+.video-overlay-btns {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    z-index: 7;
+    display: flex;
+    gap: 8px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .2s ease;
+}
+.viewport[data-page="2"] .video-overlay-btns {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.video-overlay-btns .v-delete,
+.video-overlay-btns .v-compress {
+    background: rgba(0,0,0,.45);
+    border: none;
+    color: #fff;
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    backdrop-filter: blur(4px);
+    pointer-events: auto;
+}
+.video-overlay-btns .v-compress[disabled] { opacity: .5; cursor: default; }
+
+/* ---------------- viewport / pages ---------------- */
 .viewport {
     height: 100%;
     width: 100%;
     position: relative;
     overflow: hidden;
     touch-action: pan-y;
+    z-index: 1;
 }
 
-/* ---------------- feed ---------------- */
+.pages {
+    display: flex;
+    width: 300%;
+    height: 100%;
+    transform: translateX(calc(-1 * var(--page, 1) * (100% / 3)));
+    transition: transform .35s cubic-bezier(.4, 0, .2, 1);
+    will-change: transform;
+}
+
+.page {
+    width: calc(100% / 3);
+    height: 100%;
+    position: relative;
+    flex-shrink: 0;
+    background: #000;
+    overflow: hidden;
+}
+
+/* ---------------- center page (feed only, no video element inside) ---------------- */
+.page[data-page="1"] {
+    /* Center page: empty background, playerLayer shows through */
+}
+
+/* ---------------- vertical feed (for scroll/list, no video elements rendered) ---------------- */
 .feed {
     position: absolute;
     top: 0;
@@ -33,71 +125,23 @@ html, body {
 }
 .feed::-webkit-scrollbar { display: none; }
 
+/* On pages with a side panel, the feed is pushed aside to make room for the panel.
+   Page 0's info panel is on the LEFT; page 2's settings panel is on the RIGHT.
+   The playerLayer is z-index 5 so it always shows through the center page. */
+.page[data-page="0"] .feed { left: 50%; }
+.page[data-page="2"] .feed { right: 50%; }
+
+/* Feed items: height 100%, snap-align start.
+   These are placeholders for scroll positioning only — no video element inside. */
 .video-item {
     position: relative;
     height: 100%;
     scroll-snap-align: start;
     scroll-snap-stop: always;
-    background: #000;
+    background: transparent;
     overflow: hidden;
-}
-
-.video-item video {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    background: #000;
-}
-
-.video-item .v-label {
-    position: absolute;
-    left: 14px;
-    bottom: 30px;
-    right: 14px;
-    z-index: 5;
-    font-size: 15px;
-    font-weight: 600;
-    text-shadow: 0 1px 4px rgba(0,0,0,.8);
-    word-break: break-all;
-    pointer-events: none;
-}
-.video-item .v-delete {
-    position: absolute;
-    top: 14px;
-    right: 14px;
-    z-index: 6;
-    background: rgba(0,0,0,.45);
-    border: none;
-    color: #fff;
-    font-size: 12px;
-    padding: 6px 10px;
-    border-radius: 8px;
     cursor: pointer;
-    backdrop-filter: blur(4px);
 }
-.video-item .v-compress {
-    position: absolute;
-    top: 14px;
-    right: 72px;
-    z-index: 6;
-    background: rgba(0,0,0,.45);
-    border: none;
-    color: #fff;
-    font-size: 12px;
-    padding: 6px 10px;
-    border-radius: 8px;
-    cursor: pointer;
-    backdrop-filter: blur(4px);
-}
-.video-item .v-compress[disabled] { opacity: .5; cursor: default; }
-
-/* Action buttons only show when settings panel is open */
-.video-item .v-delete,
-.video-item .v-compress { display: none; }
-.viewport[data-panel="settings"] .video-item .v-delete,
-.viewport[data-panel="settings"] .video-item .v-compress { display: block; }
 
 /* ---------------- empty state ---------------- */
 .empty-state {
@@ -118,29 +162,24 @@ html, body {
     position: absolute;
     top: 0;
     bottom: 0;
-    width: min(420px, 86vw);
+    width: 50%;
     min-width: 240px;
     z-index: 10;
     background: rgba(18, 18, 20, 0.82);
     backdrop-filter: blur(14px);
     display: flex;
     flex-direction: column;
+    transform: translateX(105%);
     transition: transform .35s cubic-bezier(.4,0,.2,1);
 }
-
-.info-panel {
+.page[data-page="0"] .side-panel {
+    right: auto;
     left: 0;
+    border-left: none;
     border-right: 1px solid rgba(255,255,255,.08);
-    transform: translateX(-105%);
+    transform: translateX(0);
 }
-.settings-panel {
-    right: 0;
-    border-left: 1px solid rgba(255,255,255,.08);
-    transform: translateX(105%);
-}
-
-.viewport[data-panel="info"] .info-panel { transform: translateX(0); }
-.viewport[data-panel="settings"] .settings-panel { transform: translateX(0); }
+.page[data-page="2"] .side-panel { transform: translateX(0); }
 
 .panel-head {
     padding: 18px 16px 12px;
@@ -214,6 +253,26 @@ html, body {
 }
 .speed-btn:hover { border-color: rgba(255,255,255,.5); color: #fff; }
 
+/* ---------------- page dot ---------------- */
+.page-dot {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 6px;
+    z-index: 12;
+    pointer-events: none;
+}
+.page-dot span {
+    width: 6px;
+    height: 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,.35);
+    transition: all .25s;
+}
+.page-dot span.on { background: #fff; width: 16px; }
+
 /* ---------------- panel mask ---------------- */
 .panel-mask {
     position: absolute;
@@ -224,13 +283,13 @@ html, body {
     pointer-events: none;
     transition: opacity .2s ease;
 }
-.viewport[data-panel="info"] .panel-mask,
-.viewport[data-panel="settings"] .panel-mask {
+.page[data-page="0"] .panel-mask,
+.page[data-page="2"] .panel-mask {
     opacity: 1;
     pointer-events: auto;
 }
 
-/* ---------------- edge hint (subtle visual cue at screen edges) ---------------- */
+/* ---------------- edge hint ---------------- */
 .edge-hint {
     position: absolute;
     top: 0;
