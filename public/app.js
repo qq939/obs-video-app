@@ -370,22 +370,53 @@
     // copies are only on screen during a wrap transition (a brief moment while
     // scrolling through them), so the middle copy is the canonical one; the
     // 500ms sync below keeps every feed's middle copy aligned in time.
+    // Side pages scrub the video at 3x: the left (info) page rewinds, the right
+    // (settings) page fast-forwards; the main feed plays at normal speed.
+    // Chrome/Safari reject negative playbackRate, so rewind is done by a manual
+    // seek timer (rewindTimer) instead of a negative rate.
+    function playbackRateForPage(pi) {
+        if (pi === 2) return 3;    // right page (settings): 3x forward
+        return 1;                  // main feed and left page: normal
+    }
+    let rewindTimer = null;
+    function startRewind() {
+        if (rewindTimer) return;
+        rewindTimer = setInterval(() => {
+            if (videos.length === 0 || currentPage !== 0 || !playing) return;
+            const feed = feeds[currentPage];
+            const item = feed.children[videos.length + activeIndex];
+            if (!item) return;
+            const video = item.querySelector('video');
+            if (!video) return;
+            video.currentTime = Math.max(0, video.currentTime - 0.3);   // 3x rewind
+            if (video.currentTime <= 0) video.pause();
+        }, 100);
+    }
+    function stopRewind() {
+        if (rewindTimer) { clearInterval(rewindTimer); rewindTimer = null; }
+    }
     function updatePlayback() {
-        if (videos.length === 0) return;
+        if (videos.length === 0) { stopRewind(); return; }
+        const rate = playbackRateForPage(currentPage);
+        const rewinding = currentPage === 0 && playing;
         feeds.forEach((feed, pi) => {
             const item = feed.children[videos.length + activeIndex];
             if (!item) return;
             const video = item.querySelector('video');
             if (!video) return;
-            if (playing) {
+            video.playbackRate = rate;
+            if (playing && !rewinding) {
                 const p = video.play();
                 if (p && p.catch) p.catch(() => {});
                 // Only the visible page's active video may have sound.
                 video.muted = !(pi === currentPage && userInteracted);
             } else {
                 video.pause();
+                video.muted = !(pi === currentPage && userInteracted);
             }
         });
+        if (rewinding) startRewind();
+        else stopRewind();
     }
 
     // Keep the three feeds' copies of the active video aligned in time.
