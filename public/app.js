@@ -235,11 +235,32 @@
         item._videoData = v;
 
         const video = document.createElement('video');
-        video.src = v.url;
-        // Safari plays HLS natively; just point src at the playlist. hls.js
-        // browsers keep the direct src here and get hls.js attached later by
-        // manageHls() (only for in-window middle copies).
-        if (NATIVE_HLS && v.hlsReady) video.src = v.hls;
+        // Playback priority: HLS (m3u8 in hls/) > direct obs URL.
+        // Using <source> children makes this a native browser decision (Safari
+        // plays the m3u8 source; hls.js takes over on Chrome/Firefox/Edge via
+        // manageHls(); if the m3u8 fails to load the browser automatically
+        // falls back to the obs URL).
+        if (v.hls && v.hlsReady && (NATIVE_HLS || HAS_HLSJS)) {
+            const sHls = document.createElement('source');
+            sHls.src = v.hls;
+            sHls.type = 'application/vnd.apple.mpegurl';
+            video.appendChild(sHls);
+        }
+        const sDirect = document.createElement('source');
+        sDirect.src = v.url;
+        const ext = (v.name.split('.').pop() || '').toLowerCase();
+        const directMime = ext === 'webm' ? 'video/webm'
+            : ext === 'mov' ? 'video/quicktime'
+            : ext === 'mkv' ? 'video/x-matroska'
+            : ext === 'm4v' ? 'video/x-m4v'
+            : ext === 'ogv' ? 'video/ogg'
+            : 'video/mp4';
+        sDirect.type = directMime;
+        video.appendChild(sDirect);
+        // Always set src too: hls.js attachMedia() needs a pre-loaded video and
+        // some browsers refuse to bind a media source to an element without an
+        // initial src. The <source> ordering still controls fallback preference.
+        video.src = v.hls && v.hlsReady && (NATIVE_HLS || HAS_HLSJS) ? v.hls : v.url;
         // Never mute: a paused video is silent on its own, and muting would
         // interfere with getting sound working on entry.
         video.muted = false;

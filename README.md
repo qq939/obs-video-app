@@ -6,7 +6,7 @@
 `/ask/claude` 问答接口。
 
 项目根目录：`/home/agent/.claude/workspace/project`
-当前 git HEAD：`master` → `be6ff0d`（OBS + Claude Ask + HLS 全自动 + 旋转修复，详情见 `logs/agent_tui.summary.md`）
+当前 git HEAD：`master` → 即将提交（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + 24:00 cron + mov/mkv 重编码兼容，详情见 `logs/agent_tui.summary.md`）
 
 ---
 
@@ -23,7 +23,7 @@
 - 📡 **HTTP Range 流式播放**：支持 `206 Partial Content`，浏览器可拖拽进度条
 - 🗑️ **删除视频**：视频卡片右上角一键删除
 - 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传；视频卡片「压缩」按钮则一键服务端转码为 H.264/AAC MP4（`ffmpeg` + `+faststart`），体积更小、浏览器秒开
-- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / 服务启动时对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）
+- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / 服务启动 / **每日 24:00 cron** 对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，**`.mov` / `.mkv` 一律重编码**（QuickTime moov 位置 + codec tag 兼容性问题，避免 hls.js/MSE 播放卡顿），hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）；**段大小按字节切**，每段约 50 MiB（`-hls_segment_size 52428800`，GOP 对齐）
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
 - 🔇 **永不静音**：暂停即无声，播放即有声（不再 `muted=true`），避免桌面鼠标拖拽滑动不触发 click 而无声
@@ -192,16 +192,19 @@ project/
 
 生成规则：
 
-- **H.264 + AAC/MP3 且无旋转元数据** → `-c copy` **快速 remux**（不重编码、无质量损失）；**带旋转元数据的视频**（如 iPhone MOV 的 Display Matrix）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`，ffmpeg 内置 autorotation 把旋转**烘焙进像素**（否则 `-c copy` 只把旋转写成 TS 显示矩阵 SEI，hls.js/MSE 忽略导致视频旋转 90°）
+- **H.264 + AAC/MP3 且无旋转元数据且扩展名 `.mp4`/`.m4v`** → `-c copy` **快速 remux**（不重编码、无质量损失）
+- **带旋转元数据的视频**（如 iPhone MOV 的 Display Matrix）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`，ffmpeg 内置 autorotation 把旋转**烘焙进像素**（否则 `-c copy` 只把旋转写成 TS 显示矩阵 SEI，hls.js/MSE 忽略导致视频旋转 90°）
+- **`.mov` / `.mkv` 一律重编码**（QuickTime moov 位置 + codec tag 兼容性问题，避免 hls.js/MSE 播放卡顿）
 - 其它（webm/vp9 等）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`
-- 统一参数：`-f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（VOD，全量保留分片）
+- 统一参数：`-f hls -hls_segment_size 52428800 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（**按字节切，约 50 MiB/段，GOP 对齐**，VOD，全量保留分片）
 - 每个 `hls/<name>/` 内写 `meta.json`（`{ version, size, rotation }`）；`/videos` 的 `hlsReady` 仅在分片存在 **且** 版本匹配 **且** 源文件大小一致时为真——版本升级或源文件变化会让所有资产自动重新生成（**每个变更都赋予所有资产**）
-- 生成时机：上传完成 / 压缩后自动后台生成；**服务启动时扫描全部视频**，缺失或过期者后台补齐；删除视频同时删除 `hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
+- 生成时机：上传完成 / 压缩后自动后台生成；**服务启动时扫描全部视频**，缺失或过期者后台补齐；**每日 24:00 cron**（server.js 进程内 `setInterval`，30 s 粒度，一天一次）扫描 obs/，对没有当前版本 HLS 的视频后台生成；删除视频同时删除 `hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
 - m3u8 使用**相对分段名**（ffmpeg 在分段临时目录内运行），自动解析到 `/hls/<name>/` 下
 
 前端：
 
 - `public/vendor/hls.min.js`（hls.js 1.5.13，jsdelivr 下载）由 `index.html` 在 `/app.js` 前引入，**必须存在**，否则非 Safari 浏览器无法走 HLS（自动回退直连 mp4/webm）
+- **播放优先级（hls > obs）**：每个 `<video>` 用 `<source>` 列表构建：第一个 source 是 `/hls/<name>/index.m3u8`（`application/vnd.apple.mpegurl`，仅当 `v.hlsReady === true`），第二个是 `/obs/<name>`（按扩展名给正确 mime，如 `.mov` 给 `video/quicktime`，`.webm` 给 `video/webm` 等）。浏览器原生处理 fallback：m3u8 加载失败自动尝试下一个 source
 - 仅中间副本且在缓存窗口内的视频挂 hls.js；leader `startLoad()`、非 leader `stopLoad()`（避免后台狂拉分片）
 - hls.js 致命错误：网络错误重试 1 次 → 媒体错误 `recoverMediaError()` 1 次 → 仍失败则销毁实例并回退直连 mp4/webm（`_hlsFallback` 防重挂循环）
 - Safari 原生 HLS：`NATIVE_HLS` 仅当 UA 为 Safari 且 `canPlayType('application/vnd.apple.mpegurl')` 为真（Chromium/Firefox/Edge 也报告 `maybe` 但无法播放，需用 UA 排除）
@@ -298,6 +301,6 @@ git log --format="%h %s" -1 >> logs/commit.txt
 
 - `/ask/claude` 在**当前主会话正在运行**时，二次 claude CLI 会因会话占用而等待；
   该端点设计用于宿主控制面板在主会话空闲时调用。
-- 当前 HEAD `be6ff0d` 已实现 HLS 全自动 + 旋转修复；完整方案、调试细节、经验教训
+- 当前 HEAD 已实现 HLS 全自动 + 旋转修复 + 按字节切段（50 MiB/段）+ 24:00 cron + mov/mkv 一律重编码；完整方案、调试细节、经验教训
   参见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
 - 更多容器部署细节参见 `hermit-container-debugging-guide.md`。
