@@ -116,6 +116,11 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 上传弹窗：设置页左下角 `＋`（`#uploadBtn`）**或设置菜单内 `#uploadPanelBtn`（「＋ 上传视频」）** → `#uploadModal`，支持点击 / 拖拽选择文件，分片进度实时显示
 - **点视频回中间**：在侧面板页（页 0=播放信息 / 页 2=设置）视频只占一侧，点击可见视频区域 → `setPage(1)` 回到中间纯 feed 页并恢复播放（`handleTap` 中 `currentPage !== 1` 分支）
 - **侧页 3 倍速快进/倒退**：切到左页（页 0 播放信息）视频 3 倍速倒退，切到右页（页 2 设置）3 倍速前进，中间页正常 1 倍速；Chrome/Safari 不支持负 `playbackRate`，倒退用 100ms 定时器手动 `currentTime -= 0.3`（≈3x）实现，前进用 `playbackRate = 3`；`updatePlayback()` 里按 `currentPage` 决定，切回中间页自动恢复
+- **进页即有声音 + 滑走暂停/滑回续播**：
+  - 声音：`updatePlayback()` 对 leader（当前页活动视频）一律先 `muted=false` 再 `play()`，被浏览器自动播放策略拒绝时 `.catch()` 回退 `muted=true` 再播；首个用户手势（`touchstart/mousedown/pointerdown/click` 任一，once 监听）触发 `updatePlayback()` 解除静音——旧代码只监听 `touchstart/click`，桌面鼠标拖拽滑动不触发 `click`，导致滑完仍无声
+  - 无声泄漏：`updatePlayback()` 先遍历当前 feed，把除活动视频外**所有** `<video>` `pause()+muted=true`，切走的上一个视频立即停声；非当前页的活动视频也保持暂停静音（仅 500ms 同步 `currentTime`）
+  - 位置缓存：`positions` Map（视频名 → 秒）。`applyIndex()` 切走前 `recordActivePosition()` 记录当前位置；`updatePlayback()` 切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（元数据未加载时用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek，完成后删除缓存项）；`loadFeed()` 清空缓存
+  - 缓存窗口：`updateVideoCache()` 只对 prev/current/next（环形）三个视频保留 `preload='metadata'`，其余全部 `preload='none'` + 暂停静音，避免浏览器把整个 feed 都缓冲、也避免远处视频出声
 
 ### 纵向无尽头滚动（3 副本 + 隐形回绕）
 - 每个 feed 渲染 `FEED_COPIES=3` 份视频列表（中间份为「真实」位置，`scrollToIndex` 定位到 `n + idx`），上/下滑到首尾都不会卡住，可无限循环

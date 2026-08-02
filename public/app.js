@@ -45,8 +45,10 @@
     let playing = true;           // global play/pause
     let random = true;            // random switch (default on)
     let autoplay = true;          // autoplay switch (default on)
-    let userInteracted = false;   // has the user tapped/clicked yet (for sound)
     let currentAbort = null;      // active upload AbortController
+    // Playback-position cache: video name -> seconds. Scrolling away from a
+    // video pauses it and records its position; scrolling back resumes it.
+    const positions = new Map();
 
     const EMPTY_HTML =
         '<div class="empty-state">' +
@@ -224,6 +226,15 @@
         video.preload = 'metadata';
         video.setAttribute('playsinline', '');
         video.setAttribute('webkit-playsinline', '');
+        video.addEventListener('loadedmetadata', () => {
+            const pending = video._pendingSeek;
+            if (pending !== undefined && isFinite(pending) &&
+                video.duration && isFinite(video.duration) &&
+                pending < video.duration - 0.3) {
+                video.currentTime = pending;
+            }
+            video._pendingSeek = undefined;
+        });
         item.appendChild(video);
 
         const label = document.createElement('div');
@@ -292,6 +303,7 @@
         feeds.forEach((f) => scrollToIndex(f, activeIndex));
         buildPageDots();
         updateInfo();
+        updateVideoCache();
         updatePlayback();
     }
 
@@ -328,10 +340,12 @@
     function applyIndex(idx, sourceFeed) {
         idx = Math.max(0, Math.min(videos.length - 1, idx));
         if (idx === activeIndex) return;
+        recordActivePosition();
         activeIndex = idx;
         playing = autoplay;
         syncFeeds(sourceFeed);
         updateInfo();
+        updateVideoCache();
         updatePlayback();
     }
 
@@ -364,6 +378,43 @@
             }, 120);
         });
     });
+
+    // ---------------------------------------------------------------- cache
+    // Only prev / current / next videos are kept warm (metadata preloaded);
+    // everything else in the feed is unloaded and silenced. This stops the
+    // browser from buffering the whole feed and from leaking audio from a
+    // video that was scrolled away from.
+    function updateVideoCache() {
+        if (videos.length === 0) return;
+        const n = videos.length;
+        feeds.forEach((feed) => {
+            for (let i = 0; i < feed.children.length; i++) {
+                const item = feed.children[i];
+                const video = item.querySelector ? item.querySelector('video') : null;
+                if (!video) continue;
+                const realIdx = i % n;
+                const diff = Math.min(Math.abs(realIdx - activeIndex), n - Math.abs(realIdx - activeIndex));
+                const inWindow = diff <= 1;   // prev / current / next (circular)
+                video.preload = inWindow ? 'metadata' : 'none';
+                if (!inWindow) { video.pause(); video.muted = true; }
+            }
+        });
+    }
+
+    // Remember where the current video was when we scroll away, so scrolling
+    // back resumes from the same spot instead of restarting from 0.
+    function recordActivePosition() {
+        if (videos.length === 0) return;
+        const v = videos[activeIndex];
+        if (!v) return;
+        const feed = feeds[currentPage];
+        const item = feed.children[videos.length + activeIndex];
+        if (!item) return;
+        const video = item.querySelector('video');
+        if (video && isFinite(video.currentTime) && video.currentTime > 0.5) {
+            positions.set(v.name, video.currentTime);
+        }
+    }
 
     // ---------------------------------------------------------------- playback
     // Control the active video in the middle copy of each feed. The ghost
@@ -399,22 +450,53 @@
         if (videos.length === 0) { stopRewind(); return; }
         const rate = playbackRateForPage(currentPage);
         const rewinding = currentPage === 0 && playing;
+        const activeName = videos[activeIndex] ? videos[activeIndex].name : null;
+        const savedPos = activeName ? positions.get(activeName) : undefined;
+        let posConsumed = false;
         feeds.forEach((feed, pi) => {
-            const item = feed.children[videos.length + activeIndex];
-            if (!item) return;
-            const video = item.querySelector('video');
+            const isLeader = pi === currentPage;
+            const activeItem = feed.children[videos.length + activeIndex];
+            // Pause + mute every video except the active one. This is what stops
+            // a video that was scrolled away from from continuing to play, and
+            // stops its audio leaking into the newly shown video.
+            for (let i = 0; i < feed.children.length; i++) {
+                const item = feed.children[i];
+                if (item === activeItem) continue;
+                const v = item.querySelector ? item.querySelector('video') : null;
+                if (v) { v.pause(); v.muted = true; }
+            }
+            if (!activeItem) return;
+            const video = activeItem.querySelector('video');
             if (!video) return;
+            // Resume a previously recorded position for this video.
+            if (savedPos !== undefined && isFinite(savedPos)) {
+                if (video.duration && isFinite(video.duration)) {
+                    if (savedPos < video.duration - 0.3 &&
+                        Math.abs(video.currentTime - savedPos) > 0.5) {
+                        video.currentTime = savedPos;
+                        if (isLeader) posConsumed = true;
+                    }
+                } else if (isLeader && !video._pendingSeek) {
+                    video._pendingSeek = savedPos;   // seek once metadata loads
+                    posConsumed = true;
+                }
+            }
             video.playbackRate = rate;
-            if (playing && !rewinding) {
+            if (playing && !rewinding && isLeader) {
+                // Try sound right away; fall back to muted if autoplay is blocked.
+                video.muted = false;
                 const p = video.play();
-                if (p && p.catch) p.catch(() => {});
-                // Only the visible page's active video may have sound.
-                video.muted = !(pi === currentPage && userInteracted);
+                if (p && p.catch) p.catch(() => {
+                    video.muted = true;
+                    const p2 = video.play();
+                    if (p2 && p2.catch) p2.catch(() => {});
+                });
             } else {
                 video.pause();
-                video.muted = !(pi === currentPage && userInteracted);
+                video.muted = !isLeader;
             }
         });
+        if (savedPos !== undefined && posConsumed) positions.delete(activeName);
         if (rewinding) startRewind();
         else stopRewind();
     }
@@ -481,6 +563,7 @@
         if (random) shuffle(list);      // local re-shuffle on top of server shuffle
         videos = list;
         activeIndex = 0;
+        positions.clear();
         renderFeeds();
     }
 
@@ -511,7 +594,6 @@
     }
 
     function handleTap(e) {
-        userInteracted = true;
         const target = e.target;
         if (!target || !target.closest) return;
         if (target.closest('.v-delete') || target.closest('.v-compress') ||
@@ -610,10 +692,11 @@
         if (!handled) handleTap(e);
     });
 
-    // First interaction -> allow sound on the active video.
-    ['touchstart', 'click'].forEach((ev) => {
+    // First interaction -> allow sound on the active video. The browser blocks
+    // unmuted autoplay until a user gesture, so retry once the user interacts
+    // (tap, mouse down, pointer down, or click).
+    ['touchstart', 'mousedown', 'pointerdown', 'click'].forEach((ev) => {
         document.addEventListener(ev, function first() {
-            userInteracted = true;
             updatePlayback();
         }, { once: true, passive: true });
     });
