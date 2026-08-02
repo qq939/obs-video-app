@@ -220,7 +220,9 @@
 
         const video = document.createElement('video');
         video.src = v.url;
-        video.muted = true;
+        // Never mute: a paused video is silent on its own, and muting would
+        // interfere with getting sound working on entry.
+        video.muted = false;
         video.loop = true;
         video.playsInline = true;
         video.preload = 'metadata';
@@ -396,7 +398,7 @@
                 const diff = Math.min(Math.abs(realIdx - activeIndex), n - Math.abs(realIdx - activeIndex));
                 const inWindow = diff <= 1;   // prev / current / next (circular)
                 video.preload = inWindow ? 'metadata' : 'none';
-                if (!inWindow) { video.pause(); video.muted = true; }
+                if (!inWindow) video.pause();   // paused => no sound, no need to mute
             }
         });
     }
@@ -456,14 +458,14 @@
         feeds.forEach((feed, pi) => {
             const isLeader = pi === currentPage;
             const activeItem = feed.children[videos.length + activeIndex];
-            // Pause + mute every video except the active one. This is what stops
-            // a video that was scrolled away from from continuing to play, and
-            // stops its audio leaking into the newly shown video.
+            // Pause every video except the active one. A paused video makes no
+            // sound, so this alone stops a scrolled-away video from leaking its
+            // audio into the newly shown video (no need to mute anything).
             for (let i = 0; i < feed.children.length; i++) {
                 const item = feed.children[i];
                 if (item === activeItem) continue;
                 const v = item.querySelector ? item.querySelector('video') : null;
-                if (v) { v.pause(); v.muted = true; }
+                if (v) v.pause();
             }
             if (!activeItem) return;
             const video = activeItem.querySelector('video');
@@ -483,17 +485,15 @@
             }
             video.playbackRate = rate;
             if (playing && !rewinding && isLeader) {
-                // Try sound right away; fall back to muted if autoplay is blocked.
+                // Play unmuted. If the browser blocks autoplay, play() rejects
+                // and the video just stays paused until the next updatePlayback
+                // (e.g. the first user gesture). We never mute — pausing is the
+                // only "silence" mechanism used.
                 video.muted = false;
                 const p = video.play();
-                if (p && p.catch) p.catch(() => {
-                    video.muted = true;
-                    const p2 = video.play();
-                    if (p2 && p2.catch) p2.catch(() => {});
-                });
+                if (p && p.catch) p.catch(() => {});
             } else {
                 video.pause();
-                video.muted = !isLeader;
             }
         });
         if (savedPos !== undefined && posConsumed) positions.delete(activeName);
