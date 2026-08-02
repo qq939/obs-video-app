@@ -369,7 +369,13 @@
         if (playing) {
             video.muted = false;
             const p = video.play();
-            if (p && p.catch) p.catch(() => {});
+            if (p && p.catch) p.catch(() => {
+                // 自动播放策略拒绝：静音兜底继续播放，绝不中途暂停；
+                // 声音在用户下一次手势触发 updatePlayback 时恢复
+                video.muted = true;
+                const p2 = video.play();
+                if (p2 && p2.catch) p2.catch(() => {});
+            });
         } else {
             video.pause();
         }
@@ -466,6 +472,7 @@
             recordActivePosition();
             currentPage = target;
         }
+        viewport.dataset.page = currentPage;     // 与 setPage 保持状态同步
         pagesEl.style.setProperty('--page', currentPage);
         pagesEl.style.transition = '';
         buildPageDots();

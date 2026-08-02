@@ -13,7 +13,8 @@ html, body {
 #playerLayer {
     position: fixed;
     inset: 0;
-    z-index: 50;
+    /* 视频层在页面内容之下：边栏(10)、页点(12)、遮罩(9)、边缘提示(8)都要显示在视频之上 */
+    z-index: 5;
     pointer-events: none;
 }
 
@@ -94,6 +95,10 @@ html, body {
     display: flex;
     width: 300%;
     height: 100%;
+    /* 必须 position:relative 才能让 z-index 生效（static 元素 z-index 无效） */
+    position: relative;
+    /* 页面内容整体在视频层(playerLayer z-index:5)之上，确保边栏/页点/边缘提示可见 */
+    z-index: 6;
     transform: translateX(calc(-1 * var(--page, 1) * (100% / 3)));
     transition: transform .35s cubic-bezier(.4, 0, .2, 1);
     will-change: transform;
@@ -108,7 +113,8 @@ html, body {
     height: 100%;
     position: relative;
     flex-shrink: 0;
-    background: #000;
+    /* 背景透明：让底层视频层(playerLayer)透出，视频在任意页面持续可见 */
+    background: transparent;
     overflow: hidden;
 }
 
