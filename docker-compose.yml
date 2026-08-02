@@ -1,0 +1,20 @@
+services:
+  obs-video-app:
+    build: .
+    container_name: obs-video-app
+    ports:
+      - "80:8082"
+    volumes:
+      - "${OBS_HOST_DIR:-./obs}:/home/agent/.claude/workspace/project/obs"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get('http://127.0.0.1:8082/health',r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>process.exit(d.trim()==='OK'?0:1));}).on('error',()=>process.exit(1));"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
