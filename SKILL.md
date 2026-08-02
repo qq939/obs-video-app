@@ -17,7 +17,8 @@ description: 开发、测试、发现 bug、变更维护容器内 Web App 8082�
 
 - **端口**：固定 `8082`，`server.js` 必须监听 `0.0.0.0`
 - **项目目录**：`/home/agent/.claude/workspace/project`
-- **运行环境**：Node.js v20+（原生 `http`，无外部依赖）；claude CLI 位于 `/usr/local/bin/claude`
+- **当前 HEAD**：`master` → `be6ff0d`（OBS + Claude Ask + HLS 全自动 + 旋转修复，详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
+- **运行环境**：Node.js v20+（原生 `http`，无外部依赖）；claude CLI 位于 `/usr/local/bin/claude`；ffmpeg 5.1 位于 `/usr/bin/ffmpeg`
 - **平台惯例**：全部在 `systemreadme.md`
 
 ## 启动脚本规范（user_start.sh）
@@ -79,7 +80,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 | `/upload/complete/:uploadId` | POST | 合并分片 + sha256 校验 → `{ok,url}` |
 | `/upload/:filename` | PUT | 简单**流式**直传 → `{ok,url}` |
 | `/obs/:filename` | GET/HEAD | HTTP Range 流式播放（206 / 416） |
-| `/videos` | GET | → `{videos:[{name,size,mtime,url}]}` |
+| `/videos` | GET | → `{videos:[{name,size,mtime,url}]}`（Fisher–Yates 随机顺序） |
 | `/obs/:filename` | DELETE | 删除视频 → `{ok}` |
 | `/compress/:filename` | POST | ffmpeg 转码压缩为 H.264/AAC MP4（faststart）→ `{ok,skipped,before,after,saved,savedPct}` |
 
@@ -140,24 +141,55 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 顺序固定：`videos` 数组顺序浏览期间不变，上滑严格逆序回放刚才的视频（历史顺序），回绕后继续同一循环序列
 - 程序化滚动抑制：`scrollToIndex` 给目标 feed 打 `_progScrollUntil`（60ms）时间戳，scroll 处理函数忽略该窗口内的自触发事件；不再用全局 `suppressScroll`，因此用户快速连续滑动源 feed 也能被处理、不会漏掉回绕
 
-### HLS 流式播放（m3u8 + ts，ffmpeg + hls.js）
-- **架构**：服务端 ffmpeg 生成 VOD 播放列表 + ts 分片（**独立 `hls/<name>/` 文件夹**，不污染 `obs/`），浏览器 hls.js（MSE）或 Safari 原生 HLS 播放；OBS 上传/下载/列表接口全部保留
-- **ffmpeg 参数**：`-f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`；**必须在分段临时目录里以 `cwd` 运行**（`runFfmpeg` 支持 `opts.cwd`），否则 m3u8 会写绝对分段名
-- **快速 remux vs 重编码**：ffprobe 探测首路 codec **和旋转**（`detectRotation`：`stream_tags=rotate` 或 `stream_side_data=rotation`，归一化到 0/90/180/270）；`h264 + (aac|mp3)` **且无旋转** → `-c copy`（不重编码、无质量损失）；**带旋转元数据的视频**（iPhone MOV 的 Display Matrix，ffprobe 报 `rotation:-90` 等）→ 强制重编码 `libx264 -crf 23 -preset medium -pix_fmt yuv420p -vf scale='min(1920,iw)':-2 -c:a aac -b:a 128k`——ffmpeg 默认 autorotation 在 `-vf` 前插入，把旋转**烘焙进像素**（`-c copy` 只把旋转写成 TS 显示矩阵 SEI，hls.js/MSE 忽略 → 视频旋转 90°）；webm/vp9/opus 等 → 同样重编码
-- **in-flight 锁**：`hlsLocks` Map（name → Promise）去重，并发同视频只跑一个 ffmpeg；输出 `hls/.tmp-*` 成功后 rename 为 `hls/<name>/`；生成前/后检查源文件仍在（防删除竞态）；失败清理临时目录；`withTimeout(p, 60s)` 兜底；启动时 `mkdirSync(HLS_DIR)` + 清理遗留 `.tmp-*`；启动时顺带移除空的旧 `obs/.hls`（HLS 已迁到独立文件夹）
-- **meta.json 版本标记（关键）**：每次生成在 `hls/<name>/meta.json` 写 `{ version: HLS_GEN_VERSION, size, mtime, rotation }`；`hlsExists(name)` 仅当 `index.m3u8` 存在 **且** `meta.version === HLS_GEN_VERSION` **且** `meta.size === 当前源文件 size` 时返回 true——**版本号一升，所有资产自动重新生成**（「每个变更都赋予所有资产」，无需任何按钮）
-- **生成时机（全自动，无按钮）**：上传 complete / 简单上传成功后 fire-and-forget 后台生成；删除 → `invalidateHls`；压缩非 skipped → `invalidateHls` + 重新生成；**服务启动 `setImmediate` 扫描全部视频**，缺失/版本过期者后台补齐；`GET /hls/<name>/index.m3u8` 时源在而分片缺失/过期 → 惰性生成；**已删除手动接口** `POST /hls/generate-all` 与 `POST /hls/:name/generate`（返回 404）
-- **/videos 附加字段**：`hls: "/hls/<enc(name)>/index.m3u8"`、`hlsReady: hlsExists(name)`（原字段不动）
-- **/obs 解码修复**：`safeName(decodeURIComponent(...))`，否则中文/空格文件名的直连播放与 HLS 回退会 404
-- **前端生命周期**（`attachHls`/`destroyHls`/`manageHls`）：
-  - 只给 middle-copy（DOM 索引 `[n,2n)`）且在缓存窗口（diff≤1）的 item 挂 hls.js；ghost 副本与窗口外保持直连 src
-  - leader（`pi===currentPage && i===n+activeIndex`）`startLoad()`，非 leader `stopLoad()`，避免后台狂拉分段
-  - 致命错误：网络错误重试 1 次 → 媒体错误 `recoverMediaError()` 1 次 → 仍失败则 `destroy()` + `video.src=v.url` 直连 + `_hlsFallback` 防重挂循环
-  - `manageHls()` 在 `updateVideoCache()` 末尾与 `setPage()`/`finishSwipe()` 中调用（覆盖 render/applyIndex/切页）
-- **NATIVE_HLS 检测坑**：Chromium/Firefox/Edge 对 `canPlayType('application/vnd.apple.mpegurl')` 都返回 `'maybe'` 但**不能播**；必须用 Safari UA 判定：`_canNativeHls && /^((?!chrome|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent)`，否则 Chromium 会误走原生 HLS 而黑屏
-- **vendor/hls.min.js**：必须存在于 `public/vendor/`（index.html 在 app.js 前引入）；缺失时 `HAS_HLSJS=false`，非 Safari 自动回退直连 mp4/webm；hls.min.js 的 UMD 会无条件覆盖 `window.Hls`，stub 测试需 `page.route("**/vendor/hls.min.js", abort)`
-- **按钮位置（宿主要求）**：视频卡片的「压缩 / 删除」按钮只在**设置页**（页 2）显示——CSS `.page:not([data-page="2"]) .video-item .v-delete/.v-compress { display:none }`；中间 feed 与信息页无任何按钮。**HLS 无任何按钮**：单视频「转HLS」与「全部转HLS」均已移除（DOM 无 `.v-hls`、无 `#hlsAllBtn`、无 `.hls-all-btn`），生成全自动；`handleTap` 只排除 `.v-delete`/`.v-compress`
-- **验证脚本**：`/tmp/verify_hls_server.py`（服务端全链路）、`/tmp/verify_hls_v2_server.py`（独立 hls/ 文件夹 + generate-all + 清理）、`/tmp/verify_hls_v2_frontend.py`（按钮位置 + 真实 hls.js 播放）、`/tmp/verify_hls_frontend_stub.py`（生命周期边界 / 错误回退 / Safari 原生）、`/tmp/verify_rotation_v3.py`（旋转修复：IMG_1370.mov 分片 1440x1920 扶正 + meta.json 版本 + 启动/惰性自动补齐 + 手动接口 404）、`/tmp/verify_rotation_v3_frontend.py`（无 HLS 按钮 + 按钮仅页 2 + hls.js 挂载 + 播放）；headless Chromium 需 `--autoplay-policy=no-user-gesture-required` 才允许自动播放
+## HLS 流式播放（已实现，详见 `logs/agent_tui.summary.md`）
+
+> 2026-08-02 上午的三轮交互从 0 到 1 完成了 HLS 流式播放的实现；
+> 实施方案整理在 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
+> 关键要点摘录如下：
+
+### 目标
+- 服务端用 ffmpeg 为每个视频生成 HLS 流（`m3u8` + 4 秒 `.ts` 分片，VOD 模式）
+- 前端用 hls.js（Chrome/Firefox）或原生 HLS（Safari）播放 m3u8
+- 保留全部现有 OBS 上传/下载/list 接口
+- 自动/惰性生成：**首启动补齐 + 上传/删除/压缩钩子 + 启动后台 sweep**，无任何手动按钮
+
+### 路由（参考已丢的 `025b07f` 设计）
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/hls/:name/index.m3u8` | GET | 惰性生成 + Range；存在则直返 m3u8 |
+| `/hls/:name/seg-NNNNN.ts` | GET | 严格正则防穿越 + Range |
+| ~~`/hls/:name/generate`~~ | ~~POST~~ | **已移除**——全自动无手动触发 |
+
+### 关键 ffmpeg 参数
+- 无旋转 / h264 + aac/mp3：`ffmpeg -i input -c copy -f hls -hls_time 4 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（**快速 remux，无损**）
+- 有旋转 / webm/vp9：必须 `-c:v libx264 -c:a aac` 重编码（**带旋转走重编码**，让 ffmpeg 内置 autorotation 把旋转烘焙进像素，避免 hls.js/MSE 忽略 SEI 的副作用）
+- `cwd` 设为 HLS 临时目录，分片名用相对路径
+
+### 旋转 90° 根因与修复（核心 debug insight）
+- **根因**：iPhone 拍摄的 `.mov` 通常带 Display Matrix（`stream_side_data.rotation = -90`）；`-c copy` remux 写到 TS 的 SEI 里，**hls.js/MSE 不解析 SEI**，原始像素按 1920x1440 横屏播出 → 看起来旋转 90°
+- **检测**：`detectRotation(filePath)` 用 ffprobe 读 `stream_tags.rotate` 或 `side_data_list[].rotation`，归一化为 0/90/180/270
+- **修复**：`canRemux(codecs, rotation)` 在 `rotation !== 0` 时返回 false，强制走重编码 —— ffmpeg 默认解码阶段就自动转正，输出 1440x1920 竖屏，无旋转副作用数据
+
+### 全自动 + meta.json 版本
+- `HLS_GEN_VERSION = 2`（每次特性变更 +1，让所有资产自动重生成）
+- 每个 `hls/<name>/meta.json` 存 `{version, size, mtime, rotation}`
+- `hlsExists(name)` 校验：`index.m3u8` 存在 + `meta.version === HLS_GEN_VERSION` + `meta.size === srcSize`
+- 启动时 `setImmediate` 扫描全部视频，缺失/过期者后台补齐
+- 路径：`hls/` 顶层独立目录（与 `obs/` 平级），不污染 `obs/`
+- `.gitignore` 需包含 `hls/`
+
+### 前端生命周期
+- `public/vendor/hls.min.js`（hls.js 1.5.13，jsdelivr 下载）由 `index.html` 引入
+- 只给 middle-copy 窗口内挂 hls.js，leader `startLoad()` / 非 leader `stopLoad()`
+- 致命错误 retry 后回退直连 mp4/webm（`_hlsFallback` 防重挂）
+- Safari 走原生 HLS（UA 判定，避免 Chromium 误判 `canPlayType` 黑屏）
+
+### 验证脚本（已不存在于 /tmp，参考命令）
+- `/tmp/verify_hls_server.py` — 服务端全链路（生成/MIME/Range/中文文件名/穿越/惰性重生成/删除清理）
+- `/tmp/verify_hls_frontend_real.py` — 真实 hls.js MSE 播放（分片拉取、currentTime 前进）
+- `/tmp/verify_hls_frontend_stub.py` — 生命周期边界、错误回退、Safari 原生
+- `/tmp/verify_rotation_v3.py` — 旋转 27 项检查（IMG 1440x1920、2347 1920x1440、meta.json、惰性重生成）
+- `/tmp/verify_rotation_v3_frontend.py` — 前端 12 项（无 hls 按钮、按钮位置、真实播放、无 generate-all）
 
 ## 日志整理流程
 
@@ -192,16 +224,8 @@ git log --format="%h %s" -1 >> logs/commit.txt
 - [ ] `GET /obs/:filename` 带 `Range` → 206，后缀 `bytes=-N` → 206，超界 → 416
 - [ ] `DELETE /obs/:filename` → ok，删后 404
 - [ ] `POST /compress/:filename` → 200 `{ok,before,after,savedPct}`，输出为 H.264 + faststart（moov 在 mdat 前）；已压缩的小视频 → `skipped:true`
-- [ ] `GET /hls/<name>/index.m3u8` → 200 `application/vnd.apple.mpegurl` + Range 206；`seg-*.ts` → 200 `video/mp2t` + Range 206
-- [ ] `hls/<name>/` 有 `index.m3u8` + `seg-*.ts` + `meta.json`（`{version:2,size,rotation}`）（`obs/` 内无 `.hls`）；m3u8 含 `#EXT-X-PLAYLIST-TYPE:VOD` + `#EXT-X-ENDLIST` + 相对分段名（无绝对 URL）
-- [ ] `/videos` 返回 `hls` + `hlsReady`；上传后 `hlsReady` 后台自动变 true；DELETE 后 `hls/<name>/` 同步删除
-- [ ] **启动自动补齐**：删掉 `hls/<name>/` 后重启服务（或等 startup sweep），全部视频 `hlsReady` 自动恢复 true；`POST /hls/generate-all` 与 `POST /hls/:name/generate` 返回 404（已移除）
-- [ ] **旋转修复**：带旋转元数据的视频（如 IMG_1370.mov，ffprobe `rotation:-90`）HLS 分片为竖屏 `1440x1920`（非旋转的 `1920x1440`）；`meta.json.rotation` 记录实际旋转值；无旋转视频走 `-c copy` 快速 remux
-- [ ] `/hls` 路径穿越 `..%2F` → 400/404；非 `seg-\d+\.ts` 分段名 → 400/404
-- [ ] 前端真实 hls.js：`window.Hls` 存在、`/hls/` 分片被拉取、`currentTime` 前进
-- [ ] 前端按钮：页 0/1 无 `.v-delete`/`.v-compress`（display none），页 2 可见；DOM 中无 `.v-hls`、无 `#hlsAllBtn`、无 `.hls-all-btn`（HLS 全自动）
-- [ ] 前端回退：hls.js 致命错误后 `video.src` 变回直连 mp4/webm、`_hlsFallback` 置位；Safari UA 下 `video.src` 以 `index.m3u8` 结尾
 - [ ] 路径穿越 `..%2F` → 404
 - [ ] `node --check server.js public/app.js` 语法通过
 - [ ] 前端三页 translateX 切换 + 三页同步播放（`logs/run.log` 无报错）
+- [ ] **永不静音**：进任意页拖拽滑动 → leader 始终有声音；侧页 3 倍速（页 0 倒退 / 页 2 前进）；位置缓存工作（离开再回来续播）
 - [ ] `logs/run.log` 有运行输出

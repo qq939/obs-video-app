@@ -6,6 +6,7 @@
 `/ask/claude` 问答接口。
 
 项目根目录：`/home/agent/.claude/workspace/project`
+当前 git HEAD：`master` → `be6ff0d`（OBS + Claude Ask + HLS 全自动 + 旋转修复，详情见 `logs/agent_tui.summary.md`）
 
 ---
 
@@ -25,6 +26,11 @@
 - 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / 服务启动时对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
+- 🔇 **永不静音**：暂停即无声，播放即有声（不再 `muted=true`），避免桌面鼠标拖拽滑动不触发 click 而无声
+- 3️⃣ **侧页 3 倍速**：左页（信息）视频 3 倍速倒退，右页（设置）3 倍速前进，中间页 1 倍速；倒退还用 `currentTime -= 0.3` 兜底 Chrome 无负 `playbackRate` 的限制
+- 📍 **位置缓存**：离开页前记录 `currentTime`，滑回时自动恢复（>0.5s 视为有效）
+- 🚫 **缓存窗口**：仅前/当前/后三个视频持有 `preload='metadata'`，其余 `preload='none'` + `pause()`，避免无声泄漏
+- 🔁 **纵向无尽头滚动**：`FEED_COPIES=3` DOM 复制 + 隐形回绕，真实视频在中间份
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
 
 ---
@@ -103,6 +109,8 @@ project/
     ├── agent_tui.summary.md
     └── commit.txt         # git commit 记录
 ```
+
+> **关于 HLS（last 3 rounds 历史）**：容器内 `logs/agent_tui.log` 记录了 2026-08-02 上午的三轮 HLS 讨论（HLS 流式播放 → HLS 独立文件夹 + 批量按钮 + 按钮挪到设置页 → HLS 全自动 + 旋转修复 + meta.json 版本号），提交历史 `025b07f` / `ee4ebd2` / `be6ff0d` 已经在当前 HEAD `be6ff0d` 中。完整方案、调试 insight、经验教训见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
 
 ---
 
@@ -253,6 +261,11 @@ project/
 - **自动播放**：默认开启，只有当前页视频可出声（首次交互后取消静音），其余页静音播放。
 - **播放/暂停**：点击当前视频卡片可切换全局播放/暂停。
 - **随机播放**：设置页开关；关闭时前端按文件名排序，开启时使用服务端随机顺序。
+- **永不静音**：全程零 `muted=true`。`updatePlayback()` 对 leader 直接 `play()`；若自动播放策略拒绝，等待首个用户手势（`touchstart/mousedown/pointerdown/click` 任一）触发再播；其余视频统一 `pause()`，暂停即无声，无需 mute
+- **侧页 3 倍速**：切到左页（页 0）视频 3 倍速倒退（无负 `playbackRate`，用 100ms 定时器手动 `currentTime -= 0.3`），切到右页（页 2）3 倍速前进（`playbackRate=3`），中间页 1 倍速
+- **位置缓存**：`positions` Map（视频名 → 秒）。切走前 `recordActivePosition()` 记录；切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek）
+- **缓存窗口**：`updateVideoCache()` 只对 prev/current/next（环形）三个视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免远处视频出声
+- **纵向无尽头滚动**：`FEED_COPIES=3` 副本，中间份为「真实」位置；进 ghost 副本立即 `scrollTop` 跳回中间份，肉眼无跳变；固定 `videos` 数组顺序，上滑严格逆序
 
 ---
 
@@ -263,6 +276,7 @@ project/
 | `logs/start.log` | `user_start.sh` 启动日志 |
 | `logs/run.log` | `server.js` 运行日志 |
 | `logs/agent_tui.log` | Claude Ask 会话流水（问题 + 回答） |
+| `logs/agent_tui.summary.md` | agent_tui.log 的整理稿 + 项目构建结构 + 最后 3 轮对话总结 |
 | `logs/commit.txt` | git commit 记录（`{commit_id} {标题}`） |
 
 ---
@@ -284,4 +298,6 @@ git log --format="%h %s" -1 >> logs/commit.txt
 
 - `/ask/claude` 在**当前主会话正在运行**时，二次 claude CLI 会因会话占用而等待；
   该端点设计用于宿主控制面板在主会话空闲时调用。
+- 当前 HEAD `be6ff0d` 已实现 HLS 全自动 + 旋转修复；完整方案、调试细节、经验教训
+  参见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
 - 更多容器部署细节参见 `hermit-container-debugging-guide.md`。
