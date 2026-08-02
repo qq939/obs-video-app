@@ -423,10 +423,10 @@
     });
 
     // ---------------------------------------------------------------- cache
-    // Only prev / current / next videos are kept warm (metadata preloaded);
-    // everything else in the feed is unloaded and silenced. This stops the
-    // browser from buffering the whole feed and from leaking audio from a
-    // video that was scrolled away from.
+    // Only the currently active video is cached; everything else is unloaded
+    // (preload='none' + pause()) so the browser doesn't buffer the whole feed
+    // and we don't leak audio from scrolled-away videos. Active video's own
+    // preload stays at 'metadata' (set in createVideoItem).
     function updateVideoCache() {
         if (videos.length === 0) return;
         const n = videos.length;
@@ -436,10 +436,9 @@
                 const video = item.querySelector ? item.querySelector('video') : null;
                 if (!video) continue;
                 const realIdx = i % n;
-                const diff = Math.min(Math.abs(realIdx - activeIndex), n - Math.abs(realIdx - activeIndex));
-                const inWindow = diff <= 1;   // prev / current / next (circular)
-                video.preload = inWindow ? 'metadata' : 'none';
-                if (!inWindow) video.pause();   // paused => no sound, no need to mute
+                const isActive = realIdx === activeIndex;
+                video.preload = isActive ? 'metadata' : 'none';
+                if (!isActive) video.pause();   // paused => no sound, no need to mute
             }
         });
         manageHls();
@@ -812,9 +811,13 @@
     });
 
     // First interaction -> allow sound on the active video. The browser blocks
-    // unmuted autoplay until a user gesture, so retry once the user interacts
-    // (tap, mouse down, pointer down, or click).
-    ['touchstart', 'mousedown', 'pointerdown', 'click'].forEach((ev) => {
+    // unmuted autoplay until a user gesture, so retry once the user does
+    // anything gesture-like. We pick the highest-frequency, lowest-friction
+    // events (mouse move / wheel / scroll / touchmove / key press) so the user
+    // doesn't have to deliberately tap the screen — moving the cursor or
+    // scrolling already counts as a gesture, and playback kicks in
+    // automatically.
+    ['pointermove', 'wheel', 'scroll', 'touchmove', 'keydown'].forEach((ev) => {
         document.addEventListener(ev, function first() {
             updatePlayback();
         }, { once: true, passive: true });
