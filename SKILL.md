@@ -181,7 +181,7 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 每个 `hls/<name>/meta.json` 存 `{version, size, mtime, rotation}`
 - `hlsExists(name)` 校验：`index.m3u8` 存在 + `meta.version === HLS_GEN_VERSION` + `meta.size === srcSize`
 - 启动时 `setImmediate` 扫描全部视频，缺失/过期者后台补齐
-- **每日 24:00 cron**（server.js 进程内 `setInterval` 30 s 粒度，`lastCronKey` 防重入）：扫描 obs/，对没有当前版本 HLS 的视频后台补齐（容器无 crontab；进程内定时与 `user_start.sh` 重启同寿命）
+- **每日 UTC+8 05:00 cron**（server.js 进程内 `setInterval` 30 s 粒度，`lastCronKey` 防重入）：用 `Intl.DateTimeFormat({timeZone:'Asia/Shanghai'})` 在 UTC+8 时区判定小时分钟和日期 key，不污染全局 TZ；扫描 obs/，对没有当前版本 HLS 的视频后台补齐（容器无 crontab；进程内定时与 `user_start.sh` 重启同寿命）
 - 路径：`hls/` 顶层独立目录（与 `obs/` 平级），不污染 `obs/`
 - `.gitignore` 需包含 `hls/`
 
