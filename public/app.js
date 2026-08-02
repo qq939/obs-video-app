@@ -30,6 +30,10 @@
     const randomSwitch = document.getElementById('randomSwitch');
     const autoplaySwitch = document.getElementById('autoplaySwitch');
     const speedOptions = document.getElementById('speedOptions');
+    const seekTrack = document.getElementById('seekTrack');
+    const seekFill = document.getElementById('seekFill');
+    const seekThumb = document.getElementById('seekThumb');
+    const seekLabel = document.getElementById('seekLabel');
     const uploadModal = document.getElementById('uploadModal');
     const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('fileInput');
@@ -375,7 +379,12 @@
     setInterval(() => {
         if (videos.length === 0) return;
         if (video.duration && isFinite(video.duration) && video.duration > 0) {
-            infoProgress.textContent = Math.round((video.currentTime / video.duration) * 100) + '%';
+            const pct = video.currentTime / video.duration;
+            const pctStr = Math.round(pct * 100) + '%';
+            infoProgress.textContent = pctStr;
+            seekFill.style.width = pctStr;
+            seekThumb.style.left = pctStr;
+            seekLabel.textContent = fmtClock(video.currentTime) + ' / ' + fmtClock(video.duration);
         }
     }, 500);
 
@@ -427,158 +436,43 @@
 
     let swipeStartX = 0, swipeStartY = 0, swipeMoved = false;
     let swipeStartTime = 0;
-    let panelDragStartX = 0;
-    let draggingPanel = null;  // 0 or 2 when dragging a page
-
+    // Rubber-band resistance at page edges
     function dragOffset(dx) {
         if ((dx < 0 && currentPage < PAGE_COUNT - 1) || (dx > 0 && currentPage > 0)) return dx;
-        return dx / 3; // rubber-band at edges
+        return dx / 3;
     }
 
-    viewport.addEventListener('touchstart', (e) => {
-        const t = e.touches[0];
-        swipeStartX = t.clientX; swipeStartY = t.clientY;
-        swipeStartTime = Date.now(); swipeMoved = false;
+    // Live drag-follow: disable CSS transition so pages track finger 1:1
+    function beginDrag(dx) {
+        swipeMoved = true;
+        pagesEl.style.transition = 'none';
+        pagesEl.style.transform = 'translateX(calc(-1 * var(--page) * (100% / 3) + ' + dragOffset(dx) + 'px))';
+    }
 
-        if (currentPage !== 1) {
-            draggingPanel = currentPage;
-            panelDragStartX = t.clientX;
-        } else {
-            // Long-press for upload
-            longPressMoved = false;
-            longPressTimer = setTimeout(() => {
-                longPressTimer = null;
-                if (!longPressMoved && currentPage === 1) {
-                    uploadModal.classList.remove('hidden');
-                    progressArea.classList.add('hidden');
-                }
-            }, LONG_PRESS_MS);
-        }
-
-        if (swipeStartX < EDGE_ZONE) edgeHintLeft.style.opacity = '1';
-        if (swipeStartX > window.innerWidth - EDGE_ZONE) edgeHintRight.style.opacity = '1';
-    }, { passive: true });
-
-    viewport.addEventListener('touchmove', (e) => {
-        const t = e.touches[0];
-        const dx = t.clientX - swipeStartX;
-        const dy = t.clientY - swipeStartY;
-
-        // Cancel long-press if finger moved
-        if (longPressTimer && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
-            clearTimeout(longPressTimer); longPressTimer = null; longPressMoved = true;
-        }
-
-        if (draggingPanel !== null) {
-            swipeMoved = true;
-            pagesEl.style.transition = 'none';
-            pagesEl.style.transform = 'translateX(calc(-1 * var(--page) * (100% / 3) + ' + dragOffset(dx) + 'px))';
-            return;
-        }
-
-        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) {
-            swipeMoved = true;
-            pagesEl.style.transition = 'none';
-            pagesEl.style.transform = 'translateX(calc(-1 * var(--page) * (100% / 3) + ' + dragOffset(dx) + 'px))';
-        } else if (Math.abs(dy) > 15) {
-            swipeMoved = true;
-            edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
-        }
-    }, { passive: true });
-
-    viewport.addEventListener('touchend', (e) => {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-
-        const t = e.changedTouches[0];
-        edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
-        pagesEl.style.transition = '';
-
-        if (draggingPanel !== null) {
-            const dx = t.clientX - panelDragStartX;
-            const velocity = Math.abs(dx) / Math.max(1, Date.now() - swipeStartTime);
-            let target = currentPage;
-            if (Math.abs(dx) > Math.abs(t.clientY - swipeStartY) && Math.abs(dx) > SWIPE_THRESHOLD) {
-                target = Math.max(0, Math.min(PAGE_COUNT - 1, dx < 0 ? currentPage + 1 : currentPage - 1));
-            }
-            currentPage = target;
-            pagesEl.style.setProperty('--page', currentPage);
-            pagesEl.style.transform = '';
-            buildPageDots();
-            applyPagePlayback();
-            draggingPanel = null;
-            return;
-        }
-
-        const handled = finishSwipe(t.clientX, t.clientY);
-        if (!handled) handleTap(e);
-    }, { passive: true });
-
-    // Mouse support
-    let mouseDown = false;
-    viewport.addEventListener('mousedown', (e) => {
-        mouseDown = true;
-        swipeStartX = e.clientX; swipeStartY = e.clientY;
-        swipeStartTime = Date.now(); swipeMoved = false;
-        if (currentPage !== 1) { draggingPanel = currentPage; panelDragStartX = e.clientX; }
-        else {
-            longPressTimer = setTimeout(() => {
-                if (currentPage === 1) { uploadModal.classList.remove('hidden'); progressArea.classList.add('hidden'); }
-                longPressTimer = null;
-            }, LONG_PRESS_MS);
-        }
-    });
-    viewport.addEventListener('mousemove', (e) => {
-        if (!mouseDown) return;
-        const dx = e.clientX - swipeStartX, dy = e.clientY - swipeStartY;
-        if (longPressTimer && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) { clearTimeout(longPressTimer); longPressTimer = null; longPressMoved = true; }
-        if (draggingPanel !== null) {
-            swipeMoved = true;
-            pagesEl.style.transition = 'none';
-            pagesEl.style.transform = 'translateX(calc(-1 * var(--page) * (100% / 3) + ' + dragOffset(dx) + 'px))';
-            return;
-        }
-        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) { swipeMoved = true; pagesEl.style.transition = 'none'; pagesEl.style.transform = 'translateX(calc(-1 * var(--page) * (100% / 3) + ' + dragOffset(dx) + 'px))'; }
-        else if (Math.abs(dy) > 15) swipeMoved = true;
-    });
-    viewport.addEventListener('mouseup', (e) => {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-        if (!mouseDown) return;
-        mouseDown = false;
-        pagesEl.style.transition = '';
-        if (draggingPanel !== null) {
-            const dx = e.clientX - panelDragStartX;
-            let target = currentPage;
-            if (Math.abs(dx) > Math.abs(e.clientY - swipeStartY) && Math.abs(dx) > SWIPE_THRESHOLD) {
-                target = Math.max(0, Math.min(PAGE_COUNT - 1, dx < 0 ? currentPage + 1 : currentPage - 1));
-            }
-            currentPage = target;
-            pagesEl.style.setProperty('--page', currentPage);
-            pagesEl.style.transform = '';
-            buildPageDots();
-            applyPagePlayback();
-            draggingPanel = null;
-            return;
-        }
-        const handled = finishSwipe(e.clientX, e.clientY);
-        if (!handled) handleTap(e);
-    });
-
+    // Resolve swipe end -> decide target page, animate back
     function finishSwipe(endX, endY) {
-        if (!swipeMoved) return false;
+        if (!swipeMoved) return false;  // treat as tap
         const dx = endX - swipeStartX;
-        if (Math.abs(dx) < SWIPE_THRESHOLD) { pagesEl.style.transform = ''; return false; }
+        const dy = endY - swipeStartY;
+        if (Math.abs(dx) < SWIPE_THRESHOLD) {
+            pagesEl.style.transition = '';
+            pagesEl.style.transform = '';
+            return false;
+        }
         const target = Math.max(0, Math.min(PAGE_COUNT - 1, dx < 0 ? currentPage + 1 : currentPage - 1));
+        pagesEl.style.transform = '';            // clear inline so CSS var takes effect
         if (target !== currentPage) {
             recordActivePosition();
             currentPage = target;
-            pagesEl.style.setProperty('--page', currentPage);
-            buildPageDots();
-            applyPagePlayback();
         }
-        pagesEl.style.transform = '';
+        pagesEl.style.setProperty('--page', currentPage);
+        pagesEl.style.transition = '';
+        buildPageDots();
+        applyPagePlayback();
         return true;
     }
 
+    // Treat tap on a side-panel page as "go back to main"
     function handleTap(e) {
         const target = e.target;
         if (!target || !target.closest) return;
@@ -589,7 +483,16 @@
 
         if (currentPage !== 1) { setPage(1); return; }
 
-        // Tap on a feed item placeholder
+        // Long-press on main feed -> upload
+        if (longPressTimer && !longPressMoved) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+            uploadModal.classList.remove('hidden');
+            progressArea.classList.add('hidden');
+            return;
+        }
+
+        // Tap on video item
         const item = target.closest('.video-item');
         if (!item) return;
         const domIdx = Array.prototype.indexOf.call(item.parentNode.children, item);
@@ -598,6 +501,83 @@
         if (idx === activeIndex) { playing = !playing; updatePlayback(); }
         else { applyIndex(idx); }
     }
+
+    // ---- Touch ----
+    viewport.addEventListener('touchstart', (e) => {
+        const t = e.touches[0];
+        swipeStartX = t.clientX; swipeStartY = t.clientY;
+        swipeStartTime = Date.now(); swipeMoved = false;
+        longPressMoved = false;
+        longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            longPressMoved = true;
+            if (currentPage === 1) {
+                uploadModal.classList.remove('hidden');
+                progressArea.classList.add('hidden');
+            }
+        }, LONG_PRESS_MS);
+
+        // Edge hints
+        if (swipeStartX < EDGE_ZONE) edgeHintLeft.style.opacity = '1';
+        if (swipeStartX > window.innerWidth - EDGE_ZONE) edgeHintRight.style.opacity = '1';
+    }, { passive: true });
+
+    viewport.addEventListener('touchmove', (e) => {
+        const t = e.touches[0];
+        const dx = t.clientX - swipeStartX;
+        const dy = t.clientY - swipeStartY;
+
+        // Cancel long-press on any movement
+        if (longPressTimer && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+            clearTimeout(longPressTimer); longPressTimer = null;
+        }
+
+        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) {
+            beginDrag(dx);
+            edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
+        } else if (Math.abs(dy) > 12) {
+            edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
+        }
+    }, { passive: true });
+
+    viewport.addEventListener('touchend', (e) => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        const t = e.changedTouches[0];
+        edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
+        const handled = finishSwipe(t.clientX, t.clientY);
+        if (!handled) handleTap(e);
+    }, { passive: true });
+
+    // ---- Mouse ----
+    let mouseDown = false;
+    viewport.addEventListener('mousedown', (e) => {
+        mouseDown = true;
+        swipeStartX = e.clientX; swipeStartY = e.clientY;
+        swipeStartTime = Date.now(); swipeMoved = false;
+        longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            if (currentPage === 1) {
+                uploadModal.classList.remove('hidden');
+                progressArea.classList.add('hidden');
+            }
+        }, LONG_PRESS_MS);
+    });
+    viewport.addEventListener('mousemove', (e) => {
+        if (!mouseDown) return;
+        const dx = e.clientX - swipeStartX;
+        const dy = e.clientY - swipeStartY;
+        if (longPressTimer && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+            clearTimeout(longPressTimer); longPressTimer = null;
+        }
+        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) beginDrag(dx);
+        else if (Math.abs(dy) > 12) { /* vertical scroll */ }
+    });
+    viewport.addEventListener('mouseup', (e) => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        if (!mouseDown) return;
+        mouseDown = false;
+        if (!finishSwipe(e.clientX, e.clientY)) handleTap(e);
+    });
 
     // First interaction unlocks audio
     ['pointermove','wheel','scroll','touchmove','keydown'].forEach(ev => {
@@ -612,6 +592,35 @@
         }
         video._pendingSeek = undefined;
     });
+
+    // Seek bar drag (touch + mouse)
+    let seekDragging = false;
+
+    function doSeek(clientX) {
+        if (videos.length === 0 || !seekTrack) return;
+        const rect = seekTrack.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        if (video.duration && isFinite(video.duration)) {
+            video.currentTime = ratio * video.duration;
+        }
+    }
+
+    seekTrack && seekTrack.addEventListener('touchstart', (e) => {
+        seekDragging = true;
+        doSeek(e.touches[0].clientX);
+        e.stopPropagation();
+    }, { passive: true });
+    seekTrack && seekTrack.addEventListener('touchmove', (e) => {
+        if (seekDragging) { doSeek(e.touches[0].clientX); e.stopPropagation(); }
+    }, { passive: true });
+    seekTrack && seekTrack.addEventListener('touchend', () => { seekDragging = false; }, { passive: true });
+    seekTrack && seekTrack.addEventListener('mousedown', (e) => {
+        seekDragging = true;
+        doSeek(e.clientX);
+        e.stopPropagation();
+    });
+    document.addEventListener('mousemove', (e) => { if (seekDragging) doSeek(e.clientX); });
+    document.addEventListener('mouseup', () => { seekDragging = false; });
 
     // Speed selector
     speedOptions.addEventListener('click', (e) => {
