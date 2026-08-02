@@ -31,13 +31,28 @@
                 <div class="setting-row"><span>视频数量</span><b id="videoCount">0</b></div>
                 <div class="setting-row"><span>随机播放</span><label class="switch"><input type="checkbox" id="randomSwitch" checked><i></i></label></div>
                 <div class="setting-row"><span>自动播放</span><label class="switch"><input type="checkbox" id="autoplaySwitch" checked><i></i></label></div>
+                <div class="setting-row speed-row">
+                    <span>播放速度</span>
+                    <div class="speed-options" id="speedOptions">
+                        <button class="speed-btn" data-speed="0.5">0.5x</button>
+                        <button class="speed-btn" data-speed="1">1x</button>
+                        <button class="speed-btn active" data-speed="1.5">1.5x</button>
+                        <button class="speed-btn" data-speed="2">2x</button>
+                        <button class="speed-btn" data-speed="3">3x</button>
+                    </div>
+                </div>
                 <button class="upload-panel-btn" id="uploadPanelBtn">＋ 上传视频</button>
                 <button class="refresh-btn" id="refreshBtn">↻ 刷新列表</button>
             </div>
         </aside>
 
-        <button class="upload-btn" id="uploadBtn" title="上传视频">＋</button>
-        <button class="info-toggle-btn" id="infoToggle" title="播放信息">ℹ</button>
+        <div class="fab-container" id="fabContainer">
+            <button class="info-toggle-btn" id="infoToggle" title="播放信息">ℹ</button>
+            <button class="upload-btn" id="uploadBtn" title="上传视频">＋</button>
+        </div>
+
+        <div class="edge-hint edge-hint-left" id="edgeHintLeft"></div>
+        <div class="edge-hint edge-hint-right" id="edgeHintRight"></div>
     </div>
 
     <!-- Upload modal -->

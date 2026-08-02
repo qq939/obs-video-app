@@ -9,7 +9,7 @@ html, body {
     -webkit-tap-highlight-color: transparent;
 }
 
-/* ---------------- viewport / pages ---------------- */
+/* ---------------- viewport ---------------- */
 .viewport {
     height: 100%;
     width: 100%;
@@ -18,7 +18,7 @@ html, body {
     touch-action: pan-y;
 }
 
-/* ---------------- vertical feed ---------------- */
+/* ---------------- feed ---------------- */
 .feed {
     position: absolute;
     top: 0;
@@ -91,10 +91,9 @@ html, body {
     cursor: pointer;
     backdrop-filter: blur(4px);
 }
-.video-item .v-compress[disabled] {
-    opacity: .5;
-    cursor: default;
-}
+.video-item .v-compress[disabled] { opacity: .5; cursor: default; }
+
+/* Action buttons only show when settings panel is open */
 .video-item .v-delete,
 .video-item .v-compress { display: none; }
 .viewport[data-panel="settings"] .video-item .v-delete,
@@ -195,6 +194,26 @@ html, body {
 .setting-row .switch input:checked + i { background: #fe2c55; }
 .setting-row .switch input:checked + i::after { transform: translateX(20px); }
 
+/* Playback speed selector */
+.speed-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.speed-options { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.speed-btn {
+    padding: 4px 10px;
+    border: 1px solid rgba(255,255,255,.2);
+    border-radius: 6px;
+    background: transparent;
+    color: rgba(255,255,255,.6);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all .15s;
+}
+.speed-btn.active {
+    background: #fe2c55;
+    border-color: #fe2c55;
+    color: #fff;
+}
+.speed-btn:hover { border-color: rgba(255,255,255,.5); color: #fff; }
+
 .upload-panel-btn {
     margin-top: 14px;
     width: 100%;
@@ -223,12 +242,19 @@ html, body {
 }
 .refresh-btn:hover { background: #3a3a3c; }
 
-/* ---------------- upload button ---------------- */
-.upload-btn {
+/* ---------------- FAB buttons (bottom-right, thumb zone) ---------------- */
+.fab-container {
     position: absolute;
     right: 18px;
     bottom: calc(28px + env(safe-area-inset-bottom));
     z-index: 20;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    align-items: center;
+}
+
+.upload-btn {
     width: 58px;
     height: 58px;
     border: none;
@@ -239,16 +265,12 @@ html, body {
     line-height: 1;
     box-shadow: 0 6px 20px rgba(254,44,85,.5);
     cursor: pointer;
-    transition: transform .15s ease;
+    transition: transform .15s ease, opacity .4s ease;
+    flex-shrink: 0;
 }
 .upload-btn:active { transform: scale(.92); }
 
-/* ---------------- info toggle button ---------------- */
 .info-toggle-btn {
-    position: absolute;
-    right: 18px;
-    bottom: calc(28px + env(safe-area-inset-bottom));
-    z-index: 20;
     width: 58px;
     height: 58px;
     border: none;
@@ -260,9 +282,26 @@ html, body {
     line-height: 1;
     box-shadow: 0 4px 14px rgba(0,0,0,.4);
     cursor: pointer;
-    transition: transform .15s ease;
+    transition: transform .15s ease, opacity .4s ease;
+    flex-shrink: 0;
 }
 .info-toggle-btn:active { transform: scale(.92); }
+
+/* Buttons hide when idle */
+.fab-container.btn-hide {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .5s ease;
+}
+
+/* Show buttons on any user interaction */
+.viewport.interacting .fab-container {
+    opacity: 1;
+    pointer-events: auto;
+    transition: opacity .2s ease;
+}
+
+/* ---------------- panel mask ---------------- */
 .panel-mask {
     position: absolute;
     inset: 0;
@@ -277,6 +316,28 @@ html, body {
     opacity: 1;
     pointer-events: auto;
 }
+
+/* ---------------- edge hint (subtle visual cue at screen edges) ---------------- */
+.edge-hint {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    z-index: 8;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity .3s ease;
+}
+.edge-hint-left {
+    left: 0;
+    background: linear-gradient(to right, rgba(254,44,85,.6), transparent);
+}
+.edge-hint-right {
+    right: 0;
+    background: linear-gradient(to left, rgba(254,44,85,.6), transparent);
+}
+.viewport.edge-hint-active .edge-hint-left { opacity: 1; }
+.viewport.edge-hint-active .edge-hint-right { opacity: 1; }
 
 /* ---------------- modal ---------------- */
 .modal {
