@@ -31,7 +31,7 @@
 - 📍 **位置缓存**：离开页前记录 `currentTime`，滑回时自动恢复（>0.5s 视为有效）
 - 🪶 **无感自动播放**：浏览器要求 user gesture 才能带声音播放；监听 `pointermove` / `wheel` / `scroll` / `touchmove` / `keydown`（任一发生）即视为手势，自动 `updatePlayback()` 触发播放 —— 用户**不用点击屏幕**，鼠标移到页面上就自动开播
 - 📐 **侧栏占半屏**：左右信息/设置 panel `width: 50%`（最小 240 px），`.feed` 在 page 0/2 时 `left/right: 50%`，中间页 panel 始终在屏外
-- 🚫 **缓存窗口**：仅前/当前/后三个视频持有 `preload='metadata'`，其余 `preload='none'` + `pause()`，避免无声泄漏
+- 🚫 **按需缓存**：只当前活动视频持有 `preload='metadata'`，其余 `preload='none'` + `pause()`，避免浏览器预加载整个 feed、避免无声泄漏；hls.js 也只挂在活动视频上（leader `startLoad()`，其它实例不存在或被销毁）
 - 🔁 **纵向无尽头滚动**：`FEED_COPIES=3` DOM 复制 + 隐形回绕，真实视频在中间份
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
 
