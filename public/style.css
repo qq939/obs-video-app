@@ -9,11 +9,11 @@ html, body {
     -webkit-tap-highlight-color: transparent;
 }
 
-/* ---------------- single shared player (outside pages) ---------------- */
+/* ---------------- single shared player (fixed overlay) ---------------- */
 #playerLayer {
-    position: absolute;
+    position: fixed;
     inset: 0;
-    z-index: 5;
+    z-index: 50;
     pointer-events: none;
 }
 
@@ -46,7 +46,7 @@ html, body {
     pointer-events: none;
 }
 
-/* Overlay buttons: only show when on settings page (currentPage === 2) */
+/* Overlay buttons: only show when on settings page */
 .video-overlay-btns {
     position: absolute;
     top: 14px;
@@ -58,7 +58,7 @@ html, body {
     pointer-events: none;
     transition: opacity .2s ease;
 }
-.viewport[data-page="2"] .video-overlay-btns {
+.page[data-page="2"] .video-overlay-btns {
     opacity: 1;
     pointer-events: auto;
 }
@@ -96,6 +96,10 @@ html, body {
     will-change: transform;
 }
 
+.pages {
+    --page: 1;
+}
+
 .page {
     width: calc(100% / 3);
     height: 100%;
@@ -125,11 +129,8 @@ html, body {
 }
 .feed::-webkit-scrollbar { display: none; }
 
-/* On pages with a side panel, the feed is pushed aside to make room for the panel.
-   Page 0's info panel is on the LEFT; page 2's settings panel is on the RIGHT.
-   The playerLayer is z-index 5 so it always shows through the center page. */
-.page[data-page="0"] .feed { left: 50%; }
-.page[data-page="2"] .feed { right: 50%; }
+/* Video always covers the center page via fixed overlay. Side pages have
+   their feed transparent so the video shows through. */
 
 /* Feed items: height 100%, snap-align start.
    These are placeholders for scroll positioning only — no video element inside. */

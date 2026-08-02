@@ -7,26 +7,13 @@
     <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-    <!-- Single shared video player — NOT inside any page -->
-    <div id="playerLayer">
-        <div class="video-container" id="videoContainer">
-            <!-- Video element created by JS -->
-            <div class="v-label" id="videoLabel"></div>
-            <div class="video-overlay-btns" id="videoOverlayBtns">
-                <button class="v-compress" id="overlayCompress">压缩</button>
-                <button class="v-delete" id="overlayDelete">删除</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Three pages: left=info, center=feed, right=settings -->
-    <!-- Video is positioned to align with the center page's feed area -->
-    <div id="viewport" class="viewport">
+    <div id="viewport" class="viewport" data-page="1">
         <div id="pages" class="pages">
 
             <!-- Page 0: info panel (swipe RIGHT to get here) -->
             <section class="page" data-page="0">
-                <div class="panel-mask" id="mask0"></div>
+                <div class="panel-mask"></div>
+                <div class="feed" id="feed0"></div>
                 <aside class="side-panel info-panel" id="infoPanel">
                     <div class="panel-head">播放信息</div>
                     <div class="panel-body">
@@ -49,7 +36,8 @@
 
             <!-- Page 2: settings panel (swipe LEFT to get here) -->
             <section class="page" data-page="2">
-                <div class="panel-mask" id="mask2"></div>
+                <div class="panel-mask"></div>
+                <div class="feed" id="feed2"></div>
                 <aside class="side-panel settings-panel" id="settingsPanel">
                     <div class="panel-head">设置</div>
                     <div class="panel-body">
@@ -70,6 +58,17 @@
                 </aside>
             </section>
 
+        </div>
+
+        <!-- Single shared video player: fixed overlay, always on top -->
+        <div id="playerLayer">
+            <div class="video-container" id="videoContainer">
+                <div class="v-label" id="videoLabel"></div>
+                <div class="video-overlay-btns" id="videoOverlayBtns">
+                    <button class="v-compress" id="overlayCompress">压缩</button>
+                    <button class="v-delete" id="overlayDelete">删除</button>
+                </div>
+            </div>
         </div>
 
         <!-- Edge hint indicators -->

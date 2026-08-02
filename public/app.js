@@ -9,9 +9,9 @@
     const viewport = document.getElementById('viewport');
     const pagesEl = document.getElementById('pages');
     const feeds = [
-        document.querySelector('[data-page="0"] .feed') || document.createElement('div'),
+        document.getElementById('feed0'),
         document.getElementById('mainFeed'),
-        document.querySelector('[data-page="2"] .feed') || document.createElement('div')
+        document.getElementById('feed2')
     ];
     const pageDot = document.getElementById('pageDot');
     const videoContainer = document.getElementById('videoContainer');
