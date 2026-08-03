@@ -4,6 +4,8 @@
     const CHUNK_SIZE = 2 * 1024 * 1024;
     // FEED_COPIES: ghost copies for infinite scroll illusion (3 = [ghost | real | ghost])
     const FEED_COPIES = 3;
+    // WINDOW_SIZE: 固定11格播放窗口（前5+当前+后5），滑动后空缺随机填充
+    const WINDOW_SIZE = 11;
 
     // ---------------------------------------------------------------- DOM refs
     const viewport = document.getElementById('viewport');
@@ -46,6 +48,9 @@
     // ---------------------------------------------------------------- state
     let videos = [];
     let activeIndex = 0;
+    // playlistWindow: 固定11格窗口，索引5为当前播放，索引0-4为"前5"，索引6-10为"后5"
+    // 每个元素为 videos 数组中的对象引用
+    let playlistWindow = [];
     let currentPage = 1;      // 0=info, 1=main, 2=settings
     let playing = true;
     let random = true;
@@ -55,6 +60,97 @@
     let longPressTimer = null;
     let longPressMoved = false;
     const positions = new Map();
+
+    // ──────────────────────────── playlist window ────────────────────────────
+    // 固定 WINDOW_SIZE 格（11 = 前5+当前+后5），窗口内同一视频不重复
+
+    function randomFill() {
+        // 用过的视频名集合（当前窗口 + positions 已记录过的）
+        const used = new Set(playlistWindow.filter(v => v).map(v => v.name));
+        // positions 里的也算"已看过"
+        for (const name of positions.keys()) used.add(name);
+        const pool = videos.filter(v => !used.has(v.name));
+        // Fisher-Yates 洗牌
+        for (let i = pool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
+        return pool;
+    }
+
+    function initPlaylistWindow() {
+        // 前5格：videos[activeIndex-5 .. activeIndex-1]（不足填null，已见过的不重复）
+        const before = [];
+        const used = new Set();
+        for (let i = 5; i >= 1; i--) {
+            const idx = activeIndex - i;
+            if (idx >= 0) { before.push(videos[idx]); used.add(videos[idx].name); }
+            else before.push(null);
+        }
+        // 当前
+        const current = videos[activeIndex] || null;
+        // 后5格：videos[activeIndex+1 .. activeIndex+5]（不足填null）
+        const after = [];
+        for (let i = 1; i <= 5; i++) {
+            const idx = activeIndex + i;
+            if (idx < videos.length) { after.push(videos[idx]); used.add(videos[idx].name); }
+            else after.push(null);
+        }
+        // 补满所有 null 位（随机不重复）
+        const w = [...before, current, ...after];
+        let fill = randomFill();
+        let fi = 0;
+        for (let i = 0; i < WINDOW_SIZE; i++) {
+            if (!w[i]) {
+                if (fi >= fill.length) fill = randomFill(), fi = 0;
+                w[i] = fill[fi++] || null;
+            }
+        }
+        playlistWindow = w;
+        syncAppState();
+    }
+
+    // 窗口中间格（索引5）为当前视频。将 videos[targetIdx] 置于窗口中间，前后各取最多5个，
+    // 已超出部分用随机视频填充（不重复）。
+    function setPlaylistWindow(targetIdx) {
+        targetIdx = Math.max(0, Math.min(videos.length - 1, targetIdx));
+        const w = [];
+        // 前5格
+        for (let i = 5; i >= 1; i--) {
+            const idx = targetIdx - i;
+            w.push(idx >= 0 ? videos[idx] : null);
+        }
+        // 当前
+        w.push(videos[targetIdx]);
+        // 后5格
+        for (let i = 1; i <= 5; i++) {
+            const idx = targetIdx + i;
+            w.push(idx < videos.length ? videos[idx] : null);
+        }
+        // 补满空位（随机不重复）
+        let fill = randomFill();
+        let fillPos = 0;
+        for (let i = 0; i < WINDOW_SIZE; i++) {
+            if (!w[i]) {
+                // 填充池用完则重新洗牌
+                if (fillPos >= fill.length) fill = randomFill(), fillPos = 0;
+                w[i] = fill[fillPos++] || null;
+            }
+        }
+        playlistWindow = w;
+        syncAppState();
+    }
+
+    function syncAppState() {
+        window._appState = {
+            window: playlistWindow.map(v => v ? v.name : null),
+            windowSize: playlistWindow.length,
+        };
+        window._allVideoNames = videos.map(v => v.name);
+        // 暴露关键变量供测试读取
+        window._playlistWindow = playlistWindow;
+        window._activeIndex = activeIndex;
+    }
 
     // ---------------------------------------------------------------- single video element (ONE instance only)
     const video = document.createElement('video');
@@ -238,15 +334,19 @@
             video.src = '';
             destroyHls();
             updateInfo();
+            playlistWindow = [];
+            syncAppState();
             return;
         }
 
+        initPlaylistWindow();  // 等价于 setPlaylistWindow(activeIndex)，保持初始化入口
+
         feeds.forEach(feed => {
             for (let c = 0; c < FEED_COPIES; c++) {
-                videos.forEach((v, i) => {
+                playlistWindow.forEach((v) => {
                     const item = document.createElement('div');
                     item.className = 'video-item';
-                    item._idx = i;  // real video index
+                    item._vid = v ? v.name : null;  // video name for lookup
                     feed.appendChild(item);
                 });
             }
@@ -257,25 +357,32 @@
         buildPageDots();
         loadVideoForIndex(activeIndex);
         updateInfo();
+        feedReady = true;  // 初始化完成，启用 scroll handler
     }
 
     // ---------------------------------------------------------------- feed scroll
+    // feed 渲染 playlistWindow × 3 副本（共 33 格）。中间副本的当前视频（窗口索引5）
+    // 始终在 scrollTop = (playlistWindow.length + 5) * h = 16 * h（初始定位）。
+    // 后续 scroll 由 vertAnimateTo 接管，applyIndex 不再调用 scrollToIndex。
+    const MIDDLE_CURRENT_TOP = (WINDOW_SIZE + 5);
     function scrollToIndex(feed, idx) {
         if (videos.length === 0) { feed.scrollTop = 0; return; }
         feed._progScrollUntil = Date.now() + 60;
-        // 初始定位必须瞬时：显式 behavior:'instant' 覆盖 CSS scroll-behavior:smooth
-        feed.scrollTo({ top: (videos.length + idx) * feed.clientHeight, behavior: 'instant' });
+        feed.scrollTo({ top: MIDDLE_CURRENT_TOP * feed.clientHeight, behavior: 'instant' });
     }
+
+    let feedReady = false;  // false=初始化期间，跳过 scroll handler 的 applyIndex
 
     feeds.forEach(feed => {
         feed.addEventListener('scroll', () => {
             if (videos.length === 0 || Date.now() < (feed._progScrollUntil || 0)) return;
             clearTimeout(feed._scrollTimer);
             feed._scrollTimer = setTimeout(() => {
+                if (!feedReady) return;  // 初始化期间不响应
                 const h = Math.max(1, feed.clientHeight);
-                const n = videos.length;
+                const n = playlistWindow.length;
                 let vis = Math.round(feed.scrollTop / h);
-                // 无限滚动副本跳转：必须瞬时，避免 smooth 动画把用户拖走
+                // 无限滚动副本跳转
                 if (vis < n) { feed._progScrollUntil = Date.now() + 60; feed.scrollTo({ top: (vis + n) * h, behavior: 'instant' }); applyIndex(vis); return; }
                 if (vis >= 2 * n) { feed._progScrollUntil = Date.now() + 60; feed.scrollTo({ top: (vis - n) * h, behavior: 'instant' }); applyIndex(vis - 2 * n); return; }
                 applyIndex(vis - n);
@@ -284,12 +391,14 @@
     });
 
     function applyIndex(idx) {
-        idx = Math.max(0, Math.min(videos.length - 1, idx));
-        if (idx === activeIndex) return;
+        if (videos.length === 0) return;
+        const targetIdx = Math.max(0, Math.min(videos.length - 1, idx));
+        if (targetIdx === activeIndex) return;
         recordActivePosition();
-        activeIndex = idx;
+        activeIndex = targetIdx;
+        setPlaylistWindow(targetIdx);
         playing = autoplay;
-        loadVideoForIndex(idx);
+        loadVideoForIndex(targetIdx);
         updateInfo();
         updatePlayback();
     }
@@ -297,7 +406,8 @@
     // ---------------------------------------------------------------- single video player
     function loadVideoForIndex(idx) {
         if (videos.length === 0) return;
-        const v = videos[idx];
+        // 当前视频固定来自 playlistWindow 中间格（索引5）
+        const v = playlistWindow[5];
         if (!v) return;
 
         destroyHls();
@@ -507,44 +617,45 @@
 
     function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
 
-    // 跟手：scrollTop 与手指纵向位移 1:1（原生滚动已关闭，完全由 JS 接管）
-    // 上滑 dy<0 → scrollTop 增大(看下一页)；下滑 dy>0 → scrollTop 减小(回上一页)
+    // 跟手：视觉中心固定在 MIDDLE_CURRENT_TOP，手指拖动产生视觉偏移
     function vertFollow(dy) {
         const feed = feeds[1];
         if (videos.length === 0) return;
-        feed._progScrollUntil = Date.now() + 120;   // 跟手期间跳过 scroll handler
+        feed._progScrollUntil = Date.now() + 120;
         feed.scrollTop = vertBaseTop - dy;
     }
 
-    // 松手：按位移/速度决定目标页，启动平滑吸附动画
+    // 松手：dy<0 上滑→下一视频；dy>0 下滑→上一视频
     function vertRelease(dy) {
         const feed = feeds[1];
-        const n = videos.length;
-        if (n === 0) return;
         const h = Math.max(1, feed.clientHeight);
-        const cur = Math.round(feed.scrollTop / h) - n;  // 副本区内的真实索引
+        if (videos.length === 0) return;
         const moved = Math.abs(dy);
         const dt = Math.max(1, Date.now() - swipeStartTime);
-        const vel = dy / dt;                              // px/ms，上滑为负
-        let tgt = cur;
-        if (dy < 0 && (moved > h * 0.25 || vel < -0.5)) tgt = cur + 1;   // 上滑翻下一页
-        else if (dy > 0 && (moved > h * 0.25 || vel > 0.5)) tgt = cur - 1; // 下滑回上一页
-        tgt = Math.max(0, Math.min(n - 1, tgt));
-        vertAnimateTo((n + tgt) * h, tgt);
+        const vel = dy / dt;   // px/ms
+        let delta = 0;
+        if (dy < 0 && (moved > h * 0.25 || vel < -0.5)) delta = 1;    // 上滑
+        else if (dy > 0 && (moved > h * 0.25 || vel > 0.5)) delta = -1; // 下滑
+        if (delta === 0) {
+            // 未超过阈值，回弹到中心
+            vertAnimateTo(vertBaseTop);
+            return;
+        }
+        const newTop = vertBaseTop - delta * h;
+        vertAnimateTo(newTop, delta);
     }
 
-    // 平滑吸附动画：rAF + easeOutCubic，动画期间跳过 scroll handler，结束对齐索引
-    function vertAnimateTo(top, idx) {
+    // 平滑吸附动画：rAF + easeOutCubic，结束时调用 applyIndex
+    function vertAnimateTo(top, delta) {
         const feed = feeds[1];
         cancelVertAnim();
         let from = feed.scrollTop;
-        if (Math.abs(from - top) < 1) { applyIndex(idx); return; }
-        // 先给 2% 起步位移，让"松手后立即采样"能看到动画进行中
+        if (Math.abs(from - top) < 1) { if (delta) applyIndex(activeIndex + delta); return; }
         feed.scrollTop = from + (top - from) * 0.02;
         from = feed.scrollTop;
         const dur = 380;
         feed._progScrollUntil = Date.now() + dur + 120;
-        vertAnim = { from, to: top, idx, start: performance.now(), dur, raf: 0 };
+        vertAnim = { from, to: top, delta, start: performance.now(), dur, raf: 0 };
         const step = (now) => {
             if (!vertAnim) return;
             const t = Math.min(1, (now - vertAnim.start) / vertAnim.dur);
@@ -553,27 +664,25 @@
             if (t < 1) {
                 vertAnim.raf = requestAnimationFrame(step);
             } else {
-                const finishIdx = vertAnim.idx;
+                const d = vertAnim.delta;
                 vertAnim = null;
                 feed._progScrollUntil = Date.now() + 120;
-                applyIndex(finishIdx);
+                feed.scrollTop = MIDDLE_CURRENT_TOP * feed.clientHeight;
+                if (d) applyIndex(activeIndex + d);
             }
         };
         vertAnim.raf = requestAnimationFrame(step);
     }
 
-    // wheel：上下翻页动画（仅主 feed，preventDefault 阻止任何原生滚动）
+    // wheel：上下翻页（deltaY>0 上滑→下视频，deltaY<0 下滑→上视频）
     feeds[1].addEventListener('wheel', (e) => {
-        const n = videos.length;
-        if (n === 0) return;
+        if (playlistWindow.length === 0) return;
         e.preventDefault();
-        if (vertAnim) return;                       // 动画中忽略连续滚动
-        const h = Math.max(1, feeds[1].clientHeight);
-        const cur = Math.round(feeds[1].scrollTop / h) - n;
+        if (vertAnim) return;
         const dir = e.deltaY > 0 ? 1 : -1;
-        const tgt = Math.max(0, Math.min(n - 1, cur + dir));
-        if (tgt === cur) return;
-        vertAnimateTo((n + tgt) * h, tgt);
+        // 边界检查：activeIndex ± dir 不越界
+        if (activeIndex + dir < 0 || activeIndex + dir >= videos.length) return;
+        applyIndex(activeIndex + dir);
     }, { passive: false });
 
     // Treat tap on a side-panel page as "go back to main"
