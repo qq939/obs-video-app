@@ -6,7 +6,7 @@
 无任何第三方依赖。同时保留平台要求的 `/ask/claude` 问答接口。
 
 项目根目录：`/home/agent/.claude/workspace/project`
-当前 git HEAD：`master` → `996ebbc`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存，详情见 `logs/agent_tui.summary.md`）
+当前 git HEAD：`main` → `996ebbc`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存，详情见 `logs/agent_tui.summary.md`）
 
 ---
 
