@@ -17,7 +17,7 @@ description: 开发、测试、发现 bug、变更维护容器内 Web App 8082�
 
 - **端口**：固定 `8082`，`server.js` 必须监听 `0.0.0.0`
 - **项目目录**：`/home/agent/.claude/workspace/project`
-- **当前 HEAD**：`master` → `be6ff0d`（OBS + Claude Ask + HLS 全自动 + 旋转修复，详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
+- **当前 HEAD**：`master` → `996ebbc`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 50 MiB + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存，详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
 - **运行环境**：Node.js v20+（原生 `http`，无外部依赖）；claude CLI 位于 `/usr/local/bin/claude`；ffmpeg 5.1 位于 `/usr/bin/ffmpeg`
 - **平台惯例**：全部在 `systemreadme.md`
 
@@ -104,11 +104,11 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   - `-c:a aac -b:a 128k`：AAC 音频
   - `-movflags +faststart`：moov 移到文件头，浏览器秒开（渐进播放关键）
 - 压缩到 `obs/.uploads/.comp-*.mp4` 临时文件，成功且更小才 `rename` 覆盖原文件；若输出 ≥ 原文件则保留原文件并返回 `skipped:true`
-- 前端：每个视频卡片有「压缩」按钮（`v-compress`，服务端 ffmpeg 转码）；上传弹窗有「压缩后上传」勾选项（`#compressBeforeUpload`，默认勾选，浏览器端先压缩再上传）
+- 前端：上传弹窗有「压缩后上传」勾选项（`#compressBeforeUpload`，默认勾选，浏览器端先压缩再上传）；**无视频卡片按钮**（按钮已移除，纯手势操作）
 - 大视频压缩收益：1080p 高码率视频通常可省 30%+；已压缩的小视频会被 skip
 
 ### 压缩后上传（浏览器端先压缩，省网络流量）
-- **逻辑**：「压缩后上传」是**上传前**在浏览器端把视频重编码为 webm（VP9/Opus）再上传，省的是**网络流量**；视频卡片「压缩」按钮是**上传后**在服务端 ffmpeg 转码为 H.264 MP4，用于已有大文件瘦身。两者并存。
+- **逻辑**：「压缩后上传」是**上传前**在浏览器端把视频重编码为 webm（VP9/Opus）再上传，省的是**网络流量**；UI 已无「压缩」按钮（删除通过面板开关或服务端直接 `DELETE /video/:name`）。
 - **实现**：`public/app.js` 的 `compressFileClient(file, onProgress)`——
   - 创建离屏 `<video>`（`position:fixed; width:2px; opacity:0`），`src = URL.createObjectURL(file)`，**`muted=false; volume=0`**（volume=0 绕过自动播放策略，且 `captureStream()` 仍录到完整音频——`muted=true` 会把录音静音）；
   - `await video.play()` 后 `video.captureStream()` + `MediaRecorder`（webm，`videoBitsPerSecond: 2_500_000`，`audioBitsPerSecond: 128_000`，`start(500)` 分片收集）；
@@ -119,20 +119,21 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 服务端无需改动：`VIDEO_EXTS` 与 MIME 已含 `.webm`/`video/webm`。
 - 验证（`/tmp/verify_compress_before_upload.py`）：3.28MB mp4 → 存为 `cbt_src.webm`（1.33MB，省 59%），ffprobe 见 vp9+opus 双轨，`volumedetect` mean ≈ -21 dB（音频非静音）；取消勾选 → 原样传 mp4（`/tmp/verify_compress_unchecked.py`）。
 
-### 前端三页水平布局（CSS translateX）
-- `#pages` 300% 宽 flex，三页各 1/3，`translateX(calc(-1 * var(--page) * 100% / 3))` 切页
-- 页 0：feed + 播放信息面板；页 1：纯 feed（默认，页点指示器）；页 2：feed + 设置菜单 + `＋` 上传按钮（左下角）
-- 三页共享同一视频列表；任一 feed 滚动后 `syncFeeds()` 同步其它两页滚动位置
-- 每页在当前索引各有一个 `<video>`，以当前页为 leader，每 500ms 同步 `currentTime` 到其它两页（进度同步）
-- 侧面板显隐：JS 静态设置 `pg.dataset.active = pg.dataset.page`，CSS 用 `[data-active="0"/"2"]` 显示面板并收窄 feed；面板镜像对称——页 0 播放信息面板在左、页 2 设置面板在右
-- 切页手势：标准拖拽跟随（`dragOffset`），左滑→下一页（到设置页）、右滑→上一页（到信息页）；拖拽时禁用过渡实时跟手，松手恢复过渡并吸附（`finishSwipe`）；边缘（页 0 右滑 / 页 2 左滑）阻力 `dx/3` 防飞出
-- 上传弹窗：设置页左下角 `＋`（`#uploadBtn`）**或设置菜单内 `#uploadPanelBtn`（「＋ 上传视频」）** → `#uploadModal`，支持点击 / 拖拽选择文件，分片进度实时显示
-- **点视频回中间**：在侧面板页（页 0=播放信息 / 页 2=设置）视频只占一侧，点击可见视频区域 → `setPage(1)` 回到中间纯 feed 页并恢复播放（`handleTap` 中 `currentPage !== 1` 分支）
-- **侧页 3 倍速快进/倒退**：切到左页（页 0 播放信息）视频 3 倍速倒退，切到右页（页 2 设置）3 倍速前进，中间页正常 1 倍速；Chrome/Safari 不支持负 `playbackRate`，倒退用 100ms 定时器手动 `currentTime -= 0.3`（≈3x）实现，前进用 `playbackRate = 3`；`updatePlayback()` 里按 `currentPage` 决定，切回中间页自动恢复
-- **进页即有声音 + 滑走暂停/滑回续播**：
+### 前端单播放器 + 左右滑动面板
+- 单一 `<div class="feed">` 占据主屏；左右两个 `<aside class="side-panel">` 滑动面板（信息 / 设置）
+- 面板占半屏：`.side-panel { width: 50%; min-width: 240px }`；feed 偏移 `left/right: 50%`
+- 信息面板（左）：文件名 / 大小 / 时间 / 进度 / 索引
+- 设置面板（右）：视频数量 / 随机播放开关 / 自动播放开关 / 播放速度（0.5x / 1x / 1.5x / 2x / 3x，默认 1.5x）
+- **纯手势操作**（无任何按钮）：
+  - **长按空白处** → 打开上传弹窗（`#uploadModal`）
+  - **左滑** → 打开信息面板；**右滑** → 打开设置面板
+  - 视频点击 / 双击 / 拖动控制播放
+  - 点击信息/设置面板外区域 → 关闭面板
+- 上传弹窗：支持点击 / 拖拽选择文件，分片进度实时显示；默认「压缩后上传」勾选
+- **进页即有声音 + 无感自动播放**：
   - 声音：**全程不禁音**（无任何 `muted=true`）。`updatePlayback()` 对 leader 直接 `muted=false` 后 `play()`；若浏览器自动播放策略拒绝（promise reject），视频保持暂停、等首个用户手势触发 `updatePlayback()` 再播。手势监听列表 = `['pointermove','wheel','scroll','touchmove','keydown']`（任一发生即 `{once:true}` 解锁）；**刻意避开 `touchstart/mousedown/pointerdown/click` 这类「按下」类事件**，因为移动鼠标 / 滚轮 / 触摸滑动这些高频事件就足以让浏览器判定为 user gesture —— 用户**不用点击屏幕**就能解锁播放
-  - 无声泄漏：`updatePlayback()` 先遍历当前 feed，把除活动视频外**所有** `<video>` `pause()`（暂停即无声，无需 mute）；切走的上一个视频立即停声；非当前页的活动视频也保持暂停（仅 500ms 同步 `currentTime`）
-  - 位置缓存：`positions` Map（视频名 → 秒）。`applyIndex()` 切走前 `recordActivePosition()` 记录当前位置；`updatePlayback()` 切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（元数据未加载时用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek，完成后删除缓存项）；`loadFeed()` 清空缓存
+  - 无声泄漏：`updatePlayback()` 先遍历当前 feed，把除活动视频外**所有** `<video>` `pause()`（暂停即无声，无需 mute）
+  - 位置缓存：`positions` Map（视频名 → 秒）。切走前 `recordActivePosition()` 记录；切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（元数据未加载时用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek）；`loadFeed()` 清空缓存
   - 按需缓存：`updateVideoCache()` 只对**当前活动视频**（`realIdx === activeIndex`）保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免浏览器把整个 feed 都缓冲、也避免远处视频出声；hls.js 也只在活动视频上 attach（`manageHls` 用 `isActive` 而非 prev/next 窗口判断）
 
 ### 纵向无尽头滚动（3 副本 + 隐形回绕）

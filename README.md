@@ -1,12 +1,12 @@
 # OBS — 视频对象存储 Web App
 
 监听 **8082** 端口的视频上传 / 播放服务，前端为抖音式竖屏滑动视频流（scroll-snap），
-**三页水平排布**（CSS translateX）：信息页 / 主 feed / 设置页，三页播放**同一个视频且进度同步**。
-后端为 Node.js 内置 `http` 模块实现，无任何第三方依赖。同时保留平台要求的
-`/ask/claude` 问答接口。
+**单一播放器 + 左右侧栏滑动面板**（CSS translateX）：左滑打开信息面板，右滑打开设置面板，
+中间是主 feed。**纯手势操作**，没有任何按钮。后端为 Node.js 内置 `http` 模块实现，
+无任何第三方依赖。同时保留平台要求的 `/ask/claude` 问答接口。
 
 项目根目录：`/home/agent/.claude/workspace/project`
-当前 git HEAD：`master` → 即将提交（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + 24:00 cron + mov/mkv 重编码兼容，详情见 `logs/agent_tui.summary.md`）
+当前 git HEAD：`master` → `996ebbc`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存，详情见 `logs/agent_tui.summary.md`）
 
 ---
 
@@ -14,24 +14,20 @@
 
 - 🎬 **竖屏视频流**：全屏滑动、逐条自动播放（scroll-snap + IntersectionObserver）
 - 🔀 **随机播放**：`GET /videos` 每次返回随机顺序（Fisher–Yates），前端随机开关可重排
-- 📄 **三页水平布局**：主 feed 页左右滑动切换：
-  - 左滑 → 信息页（同一 feed + 右侧播放信息面板：文件名/大小/时间/进度/索引）
-  - 右滑 → 设置页（同一 feed + 右侧设置菜单 + 右下角加号上传按钮）
-  - 三个页面都播放**同一个视频**，播放进度通过 leader 视频每 500ms 同步到其它两页
-- ⬆️ **分片上传**：`init → chunk → complete`，支持**断点续传**（按文件 sha256 匹配未完成会话）
-- 🪟 **上传弹窗**：设置页右下角 `＋` **或设置菜单内「＋ 上传视频」按钮**打开，支持点击选择 / 拖拽文件，实时显示分片进度
+- 📐 **单播放器 + 左右滑动面板**：主 feed 占满屏，左滑打开信息面板（文件名/大小/时间/进度/索引），右滑打开设置面板（视频数量/随机开关/自动播放开关/播放速度）
+- 👆 **纯手势操作**：无任何按钮 — 长按空白处打开上传弹窗，左右滑切换面板，点击/双击/拖动控制视频
+- ⬆️ **分片上传**：`init → chunk → complete`，支持**断点续传**（按文件 sha256 匹配未完成会话），弹窗内点击或拖拽文件即可
+- 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传
 - 📡 **HTTP Range 流式播放**：支持 `206 Partial Content`，浏览器可拖拽进度条
-- 🗑️ **删除视频**：视频卡片右上角一键删除
-- 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传；视频卡片「压缩」按钮则一键服务端转码为 H.264/AAC MP4（`ffmpeg` + `+faststart`），体积更小、浏览器秒开
 - 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / 服务启动 / **每日 UTC+8 05:00 cron** 对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，**`.mov` / `.mkv` 一律重编码**（QuickTime moov 位置 + codec tag 兼容性问题，避免 hls.js/MSE 播放卡顿），hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）；**段大小按字节切**，每段约 50 MiB（`-hls_segment_size 52428800`，GOP 对齐）
+- 🎚️ **播放速度选择**：设置面板 0.5x / 1x / 1.5x / 2x / 3x（默认 1.5x）
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
 - 🔇 **永不静音**：暂停即无声，播放即有声（不再 `muted=true`），避免桌面鼠标拖拽滑动不触发 click 而无声
-- 3️⃣ **侧页 3 倍速**：左页（信息）视频 3 倍速倒退，右页（设置）3 倍速前进，中间页 1 倍速；倒退还用 `currentTime -= 0.3` 兜底 Chrome 无负 `playbackRate` 的限制
 - 📍 **位置缓存**：离开页前记录 `currentTime`，滑回时自动恢复（>0.5s 视为有效）
 - 🪶 **无感自动播放**：浏览器要求 user gesture 才能带声音播放；监听 `pointermove` / `wheel` / `scroll` / `touchmove` / `keydown`（任一发生）即视为手势，自动 `updatePlayback()` 触发播放 —— 用户**不用点击屏幕**，鼠标移到页面上就自动开播
-- 📐 **侧栏占半屏**：左右信息/设置 panel `width: 50%`（最小 240 px），`.feed` 在 page 0/2 时 `left/right: 50%`，中间页 panel 始终在屏外
-- 🚫 **按需缓存**：只当前活动视频持有 `preload='metadata'`，其余 `preload='none'` + `pause()`，避免浏览器预加载整个 feed、避免无声泄漏；hls.js 也只挂在活动视频上（leader `startLoad()`，其它实例不存在或被销毁）
+- 📐 **侧栏占半屏**：左右信息/设置 panel `width: 50%`（最小 240 px），feed 在 panel 打开时偏移 50%
+- 🚫 **按需缓存**：只当前活动视频持有 `preload='metadata'`，其余 `preload='none'` + `pause()`，避免浏览器预加载整个 feed、避免无声泄漏；hls.js 也只挂在活动视频上
 - 🔁 **纵向无尽头滚动**：`FEED_COPIES=3` DOM 复制 + 隐形回绕，真实视频在中间份
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
 
@@ -112,7 +108,7 @@ project/
     └── commit.txt         # git commit 记录
 ```
 
-> **关于 HLS（last 3 rounds 历史）**：容器内 `logs/agent_tui.log` 记录了 2026-08-02 上午的三轮 HLS 讨论（HLS 流式播放 → HLS 独立文件夹 + 批量按钮 + 按钮挪到设置页 → HLS 全自动 + 旋转修复 + meta.json 版本号），提交历史 `025b07f` / `ee4ebd2` / `be6ff0d` 已经在当前 HEAD `be6ff0d` 中。完整方案、调试 insight、经验教训见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
+> **关于 HLS 与本轮变更**：容器内 `logs/agent_tui.log` 记录了从 2026-08-01 起的所有会话；最近 3 轮 = HLS 按字节切段 50 MiB + 24:00 cron → cron 改 UTC+8 05:00 → 无感播放 + 50% 侧栏 + 按需缓存（commit `21f9a93` / `a106c32` / `8d25e1b` / `1dcecfd`）。后续从 origin 拉来了 `bcdfb65` / `ceb68b4` / `996ebbc` 三个 commit（单播放器 / 手势优化 / 纯手势操作），当前 HEAD `996ebbc` 已包含全部。完整方案、调试 insight、经验教训见 `logs/agent_tui.summary.md`「最后 3 轮对话总结」。
 
 ---
 
@@ -179,11 +175,11 @@ project/
 
 - 压缩参数：`libx264 -crf 23 -preset medium -pix_fmt yuv420p`，宽度上限 1920，音频 `aac 128k`
 - 输出比原文件更小才覆盖；否则保留原文件并返回 `skipped: true`
-- 前端：视频卡片「压缩」按钮（服务端转码）；上传弹窗「压缩后上传」勾选项（浏览器端先压缩再上传，见下）
+- 前端：上传弹窗「压缩后上传」勾选项（浏览器端先压缩再上传）；无视频卡片按钮（按钮已移除，纯手势）
 
 ### 7. HLS 流式播放（m3u8 + ts）
 
-服务端用 ffmpeg 把视频切成 4s 的 ts 分片并生成 VOD 播放列表（`hls/<name>/index.m3u8` + `seg-*.ts`，**独立文件夹，不污染 `obs/`**），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。**HLS 全自动生成，无任何「转HLS」按钮**。OBS 上传 / 下载 / 列表接口全部保留。
+服务端用 ffmpeg 把视频切成约 50 MiB 的 ts 分片（`hls/<name>/index.m3u8` + `seg-*.ts`，**独立文件夹，不污染 `obs/`**），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。**HLS 全自动生成，无任何「转HLS」按钮**。OBS 上传 / 下载 / 列表接口全部保留。
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
@@ -207,10 +203,10 @@ project/
 
 - `public/vendor/hls.min.js`（hls.js 1.5.13，jsdelivr 下载）由 `index.html` 在 `/app.js` 前引入，**必须存在**，否则非 Safari 浏览器无法走 HLS（自动回退直连 mp4/webm）
 - **播放优先级（hls > obs）**：每个 `<video>` 用 `<source>` 列表构建：第一个 source 是 `/hls/<name>/index.m3u8`（`application/vnd.apple.mpegurl`，仅当 `v.hlsReady === true`），第二个是 `/obs/<name>`（按扩展名给正确 mime，如 `.mov` 给 `video/quicktime`，`.webm` 给 `video/webm` 等）。浏览器原生处理 fallback：m3u8 加载失败自动尝试下一个 source
-- 仅中间副本且在缓存窗口内的视频挂 hls.js；leader `startLoad()`、非 leader `stopLoad()`（避免后台狂拉分片）
+- **按需缓存 + hls.js 仅挂在活动视频**：`updateVideoCache()` 只对当前活动视频保留 `preload='metadata'`，其余 `preload='none'` + `pause()`；`manageHls()` 只在活动视频的中间副本上 attach hls.js（leader `startLoad()`），其它视频不挂或销毁（远端幽灵拉流主动释放，避免后台狂拉分片）
 - hls.js 致命错误：网络错误重试 1 次 → 媒体错误 `recoverMediaError()` 1 次 → 仍失败则销毁实例并回退直连 mp4/webm（`_hlsFallback` 防重挂循环）
 - Safari 原生 HLS：`NATIVE_HLS` 仅当 UA 为 Safari 且 `canPlayType('application/vnd.apple.mpegurl')` 为真（Chromium/Firefox/Edge 也报告 `maybe` 但无法播放，需用 UA 排除）
-- **按钮位置**：视频卡片的「压缩 / 删除」按钮只在**设置页**（页 2）显示，信息页与中间 feed 保持干净；HLS 全自动、设置页也无「转HLS」按钮
+- **无按钮**：UI 不再有「压缩 / 删除 / 转 HLS / 上传」按钮（HLS / 旋转 / mov 兼容全自动；上传通过长按空白处手势触发弹窗）
 
 ### 8. 平台接口
 
@@ -241,36 +237,33 @@ project/
 
 分片大小：2 MB（前端），`/upload/init` 可自定义 `chunkSize`。
 
-> 说明：压缩在**上传前**于浏览器端完成，因此省的是**网络流量**（只传压缩后的小文件）；
-> 视频卡片「压缩」按钮是**上传后**于服务端用 ffmpeg 转码为 H.264 MP4，用于已有大文件的瘦身。
+> 说明：压缩在**上传前**于浏览器端完成，因此省的是**网络流量**（只传压缩后的小文件）。
+> UI 已无「压缩 / 删除」按钮：上传即压缩，删除通过面板里的开关或直接删除源文件（保留服务端 HLS 全自动 + 旋转 + mov 兼容）。
 
 ---
 
-## 前端交互（三页水平布局）
+## 前端交互（单播放器 + 左右滑动面板）
 
-`public/index.html` 内 `#pages` 为 300% 宽 flex 容器，三个 `<section class="page">`
-各占 1/3，通过 `transform: translateX(calc(-1 * var(--page) * 100% / 3))` 水平切换：
+`public/index.html` 只有一个 `<div class="feed">` 占据主屏，左右两个 `<aside class="side-panel">` 滑动面板：
 
-| 页 | 内容 | 手势 |
-|----|------|------|
-| 0 | 同一 feed + 右侧**播放信息面板**（文件名 / 大小 / 时间 / 进度 / 索引） | 从主 feed 右滑 |
-| 1 | 纯视频 feed（默认页，顶部页点指示器） | 左右滑切页 |
-| 2 | 同一 feed + 右侧**设置菜单**（视频数量 / 随机 / 自动播放 /「＋ 上传视频」/ 刷新）+ 右下角 `＋` 上传按钮 | 从主 feed 左滑 |
+| 面板 | 内容 | 触发手势 |
+|------|------|---------|
+| 信息面板（左）| 文件名 / 大小 / 时间 / 进度 / 索引 | 主屏**左滑** |
+| 设置面板（右）| 视频数量 / 随机开关 / 自动播放开关 / 播放速度（0.5x/1x/1.5x/2x/3x） | 主屏**右滑** |
+| 上传弹窗 | 选择文件 / 拖拽 / 进度 / 压缩后上传勾选 | **长按空白处** |
 
 交互要点：
 
-- **三页同步**：三个 feed 渲染同一份视频列表；任一 feed 滚动切换视频后，
-  `syncFeeds()` 会把其余两页滚动到同一索引（`suppressScroll` 防止反馈循环）。
-- **进度同步**：每个页面在当前索引各有一个 `<video>`，以**当前页**视频为 leader，
-  每 500ms 将 leader 的 `currentTime` 同步到其余两页，保证切页后续播同一进度。
-- **自动播放**：默认开启，只有当前页视频可出声（首次交互后取消静音），其余页静音播放。
-- **播放/暂停**：点击当前视频卡片可切换全局播放/暂停。
-- **随机播放**：设置页开关；关闭时前端按文件名排序，开启时使用服务端随机顺序。
-- **永不静音**：全程零 `muted=true`。`updatePlayback()` 对 leader 直接 `play()`；若自动播放策略拒绝，等待首个用户手势（`touchstart/mousedown/pointerdown/click` 任一）触发再播；其余视频统一 `pause()`，暂停即无声，无需 mute
-- **侧页 3 倍速**：切到左页（页 0）视频 3 倍速倒退（无负 `playbackRate`，用 100ms 定时器手动 `currentTime -= 0.3`），切到右页（页 2）3 倍速前进（`playbackRate=3`），中间页 1 倍速
+- **纯手势**：UI 没有任何按钮 — 上传长按空白处，面板左右滑，视频点击/双击/拖动
+- **单播放器**：feed 内每视频只渲染一份（`FEED_COPIES=3` DOM 副本是用于无限滚动，真实视频在中间份），左右面板不重复渲染 feed
+- **面板不打断播放**：打开左/右面板时视频继续在主屏播放（leader 不变，进度不重置）
+- **自动播放**：默认开启；`updatePlayback()` 对 leader `muted=false` 后 `play()`；浏览器 autoplay 策略拒绝时等首个手势
+- **无感自动播放**：手势监听 `pointermove` / `wheel` / `scroll` / `touchmove` / `keydown` 任一即视为 user gesture（不需要「按下」类事件，鼠标移动到页面即可解锁）
+- **永不静音**：全程零 `muted=true`；暂停即无声，无需 mute
+- **播放速度**：设置面板按钮（0.5x / 1x / 1.5x / 2x / 3x，默认 1.5x），通过 `video.playbackRate` 设置
 - **位置缓存**：`positions` Map（视频名 → 秒）。切走前 `recordActivePosition()` 记录；切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek）
-- **缓存窗口**：`updateVideoCache()` 只对 prev/current/next（环形）三个视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免远处视频出声
-- **纵向无尽头滚动**：`FEED_COPIES=3` 副本，中间份为「真实」位置；进 ghost 副本立即 `scrollTop` 跳回中间份，肉眼无跳变；固定 `videos` 数组顺序，上滑严格逆序
+- **按需缓存**：`updateVideoCache()` 只对当前活动视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`；hls.js 也只挂在活动视频上（避免远处视频出声、避免远端幽灵拉流）
+- **纵向无尽头滚动**：`FEED_COPIES=3` 副本，中间份为「真实」位置；进 ghost 副本立即 `scrollTop` 跳回中间份，肉眼无跳变
 
 ---
 
@@ -303,6 +296,6 @@ git log --format="%h %s" -1 >> logs/commit.txt
 
 - `/ask/claude` 在**当前主会话正在运行**时，二次 claude CLI 会因会话占用而等待；
   该端点设计用于宿主控制面板在主会话空闲时调用。
-- 当前 HEAD 已实现 HLS 全自动 + 旋转修复 + 按字节切段（50 MiB/段）+ 24:00 cron + mov/mkv 一律重编码；完整方案、调试细节、经验教训
+- 当前 HEAD `996ebbc` 已实现：HLS 全自动 + 旋转 90° 修复 + 按字节切段（50 MiB/段）+ UTC+8 05:00 cron + mov/mkv 一律重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存。完整方案、调试细节、经验教训
   参见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
 - 更多容器部署细节参见 `hermit-container-debugging-guide.md`。
