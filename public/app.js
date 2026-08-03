@@ -444,17 +444,20 @@
     }
 
     // ---------------------------------------------------------------- gestures
-    const SWIPE_THRESHOLD = 220;
-    const DRAG_START = 12;
+    // 横向翻页阈值：相对视口 35%（最小 240px），视口 1280 时 = 448，避免左右滑动误翻页
+    const SWIPE_THRESHOLD = Math.max(240, Math.round(window.innerWidth * 0.35));
+    const DRAG_START = 12;          // 横向拖拽起步距离
+    const AXIS_LOCK_DIST = 18;      // 位移超过该值后锁定主轴（斜向滑动防误判）
     const EDGE_ZONE = 60;
     const CLOSE_THRESHOLD = 80;
-    const VELOCITY_THRESHOLD = 0.3;
+    const VELOCITY_THRESHOLD = 0.5; // px/ms：快速轻扫豁免横向阈值
     const LONG_PRESS_MS = 800;
     const PAGE_COUNT = 3;
 
     let swipeStartX = 0, swipeStartY = 0, swipeMoved = false;
     let verticalMoved = false;   // true if user scrolled vertically (skip tap)
     let swipeStartTime = 0;
+    let axisLock = null;         // null | 'h' | 'v'：位移超过 AXIS_LOCK_DIST 后锁定主轴
     // Rubber-band resistance at page edges
     function dragOffset(dx) {
         if ((dx < 0 && currentPage < PAGE_COUNT - 1) || (dx > 0 && currentPage > 0)) return dx;
@@ -473,7 +476,10 @@
         if (!swipeMoved) return false;  // treat as tap
         const dx = endX - swipeStartX;
         const dy = endY - swipeStartY;
-        if (Math.abs(dx) < SWIPE_THRESHOLD) {
+        // 快速轻扫（有意翻页）豁免：位移 ≥ 60% 阈值且速度 > VELOCITY_THRESHOLD 即翻页
+        const dt = Math.max(1, Date.now() - swipeStartTime);
+        const fast = Math.abs(dx) >= SWIPE_THRESHOLD * 0.6 && Math.abs(dx) / dt > VELOCITY_THRESHOLD;
+        if (Math.abs(dx) < SWIPE_THRESHOLD && !fast) {
             pagesEl.style.transition = '';
             pagesEl.style.transform = '';
             return false;
@@ -606,6 +612,7 @@
         swipeStartX = t.clientX; swipeStartY = t.clientY;
         swipeStartTime = Date.now(); swipeMoved = false;
         verticalMoved = false;
+        axisLock = null;
         vertStartY = t.clientY;
         vertBaseTop = feeds[1].scrollTop;
         cancelVertAnim();
@@ -634,10 +641,15 @@
             clearTimeout(longPressTimer); longPressTimer = null;
         }
 
-        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) {
-            beginDrag(dx);
+        // 方向锁定：首次显著位移后锁定主轴，后续只响应主轴（斜向/微抖不再误判）
+        if (!axisLock && (Math.abs(dx) > AXIS_LOCK_DIST || Math.abs(dy) > AXIS_LOCK_DIST)) {
+            axisLock = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+        }
+
+        if (axisLock === 'h') {
+            if (Math.abs(dx) > DRAG_START) beginDrag(dx);
             edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
-        } else if (Math.abs(dy) > 12) {
+        } else if (axisLock === 'v') {
             verticalMoved = true;
             vertFollow(dy);
             edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
@@ -664,6 +676,7 @@
         swipeStartX = e.clientX; swipeStartY = e.clientY;
         swipeStartTime = Date.now(); swipeMoved = false;
         verticalMoved = false;
+        axisLock = null;
         vertStartY = e.clientY;
         vertBaseTop = feeds[1].scrollTop;
         cancelVertAnim();
@@ -682,8 +695,15 @@
         if (longPressTimer && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
             clearTimeout(longPressTimer); longPressTimer = null;
         }
-        if (Math.abs(dx) > DRAG_START && Math.abs(dx) > Math.abs(dy)) beginDrag(dx);
-        else if (Math.abs(dy) > 12) { verticalMoved = true; vertFollow(dy); }
+        // 方向锁定（与 touchmove 一致）
+        if (!axisLock && (Math.abs(dx) > AXIS_LOCK_DIST || Math.abs(dy) > AXIS_LOCK_DIST)) {
+            axisLock = Math.abs(dx) > Math.abs(dy) ? 'h' : 'v';
+        }
+        if (axisLock === 'h') {
+            if (Math.abs(dx) > DRAG_START) beginDrag(dx);
+        } else if (axisLock === 'v') {
+            verticalMoved = true; vertFollow(dy);
+        }
     });
     viewport.addEventListener('mouseup', (e) => {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
