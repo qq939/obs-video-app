@@ -61,64 +61,94 @@
     let longPressMoved = false;
     const positions = new Map();
 
-    // ──────────────────────────── playlist window ────────────────────────────
-    // 维护一个扩展基础列表 extendedList（顺序固定，videos 循环填充）。
-    // 窗口从 extendedList 中连续切出 WINDOW_SIZE=11 格，索引5为当前。
-    // 前后顺序固定：extendedList 中位置固定，窗口滑动时顺序循环不变。
+    // ──────────────────────────── playlist window（滑动队列）────────────────────────
+    // playlistWindow = 固定11格队列，索引5为当前播放。
+    // 上滑 shiftWindow(+1)：左移，前排出队，末尾补随机（不重复）
+    // 下滑 shiftWindow(-1)：右移，后排出队，开头补随机（不重复）
+    // setPlaylistWindow(idx)：重建窗口使 videos[idx] 在中间（用于 applyIndex 跳转）
+    // 随机池用完则重新 Fisher-Yates 洗牌补充。
 
-    let baseShuffle = [];   // Fisher-Yates 随机排列（仅初始化时生成）
-    let extendedList = [];  // 固定顺序的基础列表，videos 循环填充
-    let _baseIdx = -1;      // 当前视频 videos[_baseIdx] 在 baseShuffle 中的位置
+    let _fillPool = [];  // 当前随机候选池
 
-    // 初始化 shuffle（仅首次或 videos 变化时调用）
-    function buildBaseShuffle() {
-        baseShuffle = videos.slice();
-        for (let i = baseShuffle.length - 1; i > 0; i--) {
+    function _shufflePool(pool) {
+        for (let i = pool.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
-            [baseShuffle[i], baseShuffle[j]] = [baseShuffle[j], baseShuffle[i]];
+            [pool[i], pool[j]] = [pool[j], pool[i]];
         }
-        // 构造 extendedList（baseShuffle 循环填充 WINDOW_SIZE + 10 = 21 格）
-        const n = baseShuffle.length;
-        const total = WINDOW_SIZE + 10;
-        extendedList = [];
-        for (let i = 0; i < total; i++) {
-            extendedList.push(baseShuffle[i % n]);
-        }
+        return pool;
     }
 
-    // 根据当前视频在 extendedList 中的位置，只旋转不重建
-    function rotateExtendedList(idx) {
-        const n = baseShuffle.length;
-        if (n === 0) return;
-        // 找到 videos[idx] 在 baseShuffle 中的位置
-        const pos = baseShuffle.indexOf(videos[idx]);
-        // 右旋 extendedList 使 baseShuffle[pos] 移到 extendedList[5]
-        // 需 new[5] = old[pos]，即 (5+k) % n = pos，k = (5-pos) % n ≥ 0
-        const k = (5 - pos + n) % n;
-        const total = WINDOW_SIZE + 10;
-        extendedList = extendedList.slice(total - k).concat(extendedList.slice(0, total - k));
+    function _makeFillPool() {
+        // 候选池：不在当前窗口内（且不是当前播放）的 videos
+        const used = new Set(playlistWindow.filter(v => v).map(v => v.name));
+        // 只排除当前播放（positions 中刚记录的），不排除所有已记录过的
+        const currentVideo = videos[activeIndex];
+        if (currentVideo) used.add(currentVideo.name);
+        _fillPool = videos.filter(v => !used.has(v.name));
+        _shufflePool(_fillPool);
     }
 
-    // 设置当前播放索引
-    function setPlaylistWindow(targetIdx) {
-        if (videos.length === 0) { playlistWindow = []; syncAppState(); return; }
-        targetIdx = Math.max(0, Math.min(videos.length - 1, targetIdx));
-        if (baseShuffle.length === 0 || baseShuffle.length !== videos.length) {
-            buildBaseShuffle();  // 首次或 videos 变化
-        }
-        rotateExtendedList(targetIdx);
-        // extendedList[5] 固定是当前视频 videos[targetIdx]，前后各取5个
+    function _nextFill() {
+        if (_fillPool.length === 0) _makeFillPool();
+        return _fillPool.pop() || null;
+    }
+
+    // 初始化队列：前5空，当前 videos[0]，后5 = videos[1..5] 或随机
+    function initPlaylistWindow() {
+        if (videos.length === 0) { playlistWindow = []; _fillPool = []; syncAppState(); return; }
         playlistWindow = [];
-        for (let i = 5; i >= 1; i--) playlistWindow.push(extendedList[5 - i]);
-        playlistWindow.push(extendedList[5]);
-        for (let i = 1; i <= 5; i++) playlistWindow.push(extendedList[5 + i]);
-        activeIndex = targetIdx;
+        for (let i = 0; i < 5; i++) playlistWindow.push(null);  // 前5空
+        playlistWindow.push(videos[0]);  // 当前
+        for (let i = 1; i <= 5; i++) {  // 后5
+            playlistWindow.push(videos[i] || null);
+        }
+        // 补满空位
+        _makeFillPool();
+        for (let i = 0; i < WINDOW_SIZE; i++) {
+            if (!playlistWindow[i]) playlistWindow[i] = _nextFill();
+        }
         syncAppState();
     }
 
-    function initPlaylistWindow() {
-        buildBaseShuffle();
-        setPlaylistWindow(0);
+    // 上滑(+1)/下滑(-1)移动队列，末尾/开头补随机
+    function shiftWindow(delta) {
+        if (!delta || videos.length === 0) return;
+        if (delta > 0) {
+            playlistWindow.shift();  // 左移：移除前5格中最老的
+            playlistWindow.push(_nextFill());  // 末尾补随机
+        } else {
+            delta = -delta;
+            playlistWindow.pop();  // 右移：移除末尾
+            playlistWindow.unshift(_nextFill());  // 开头补随机
+        }
+        syncAppState();
+    }
+
+    // 重建窗口使 videos[targetIdx] 在队列中间（索引5）
+    function setPlaylistWindow(targetIdx) {
+        if (videos.length === 0) { playlistWindow = []; _fillPool = []; syncAppState(); return; }
+        targetIdx = Math.max(0, Math.min(videos.length - 1, targetIdx));
+        const w = [];
+        // 前5格
+        for (let i = 5; i >= 1; i--) {
+            const idx = targetIdx - i;
+            w.push(idx >= 0 ? videos[idx] : null);
+        }
+        // 当前
+        w.push(videos[targetIdx]);
+        // 后5格
+        for (let i = 1; i <= 5; i++) {
+            const idx = targetIdx + i;
+            w.push(idx < videos.length ? videos[idx] : null);
+        }
+        // 补满空位
+        _makeFillPool();
+        for (let i = 0; i < WINDOW_SIZE; i++) {
+            if (!w[i]) w[i] = _nextFill();
+        }
+        playlistWindow = w;
+        activeIndex = targetIdx;
+        syncAppState();
     }
 
     function syncAppState() {
@@ -127,7 +157,6 @@
             windowSize: playlistWindow.length,
         };
         window._allVideoNames = videos.map(v => v.name);
-        window._extendedList = extendedList.map(v => v ? v.name : null);
         window._playlistWindow = playlistWindow;
         window._activeIndex = activeIndex;
     }
@@ -365,10 +394,9 @@
                 const h = Math.max(1, feed.clientHeight);
                 const n = playlistWindow.length;
                 let vis = Math.round(feed.scrollTop / h);
-                // 无限滚动副本跳转
-                if (vis < n) { feed._progScrollUntil = Date.now() + 60; feed.scrollTo({ top: (vis + n) * h, behavior: 'instant' }); applyIndex(vis); return; }
-                if (vis >= 2 * n) { feed._progScrollUntil = Date.now() + 60; feed.scrollTo({ top: (vis - n) * h, behavior: 'instant' }); applyIndex(vis - 2 * n); return; }
-                applyIndex(vis - n);
+                // 无限滚动副本跳转：只修正 scrollTop，不重建窗口（窗口重建由 vertAnimateTo 处理）
+                if (vis < n) { feed._progScrollUntil = Date.now() + 60; feed.scrollTo({ top: (vis + n) * h, behavior: 'instant' }); return; }
+                if (vis >= 2 * n) { feed._progScrollUntil = Date.now() + 60; feed.scrollTo({ top: (vis - n) * h, behavior: 'instant' }); return; }
             }, 120);
         });
     });
