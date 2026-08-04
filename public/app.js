@@ -62,83 +62,63 @@
     const positions = new Map();
 
     // ──────────────────────────── playlist window ────────────────────────────
-    // 固定 WINDOW_SIZE 格（11 = 前5+当前+后5），窗口内同一视频不重复
+    // 维护一个扩展基础列表 extendedList（顺序固定，videos 循环填充）。
+    // 窗口从 extendedList 中连续切出 WINDOW_SIZE=11 格，索引5为当前。
+    // 前后顺序固定：extendedList 中位置固定，窗口滑动时顺序循环不变。
 
-    function randomFill() {
-        // 用过的视频名集合（当前窗口 + positions 已记录过的）
-        const used = new Set(playlistWindow.filter(v => v).map(v => v.name));
-        // positions 里的也算"已看过"
-        for (const name of positions.keys()) used.add(name);
-        const pool = videos.filter(v => !used.has(v.name));
-        // Fisher-Yates 洗牌
-        for (let i = pool.length - 1; i > 0; i--) {
+    let baseShuffle = [];   // Fisher-Yates 随机排列（仅初始化时生成）
+    let extendedList = [];  // 固定顺序的基础列表，videos 循环填充
+    let _baseIdx = -1;      // 当前视频 videos[_baseIdx] 在 baseShuffle 中的位置
+
+    // 初始化 shuffle（仅首次或 videos 变化时调用）
+    function buildBaseShuffle() {
+        baseShuffle = videos.slice();
+        for (let i = baseShuffle.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
-            [pool[i], pool[j]] = [pool[j], pool[i]];
+            [baseShuffle[i], baseShuffle[j]] = [baseShuffle[j], baseShuffle[i]];
         }
-        return pool;
+        // 构造 extendedList（baseShuffle 循环填充 WINDOW_SIZE + 10 = 21 格）
+        const n = baseShuffle.length;
+        const total = WINDOW_SIZE + 10;
+        extendedList = [];
+        for (let i = 0; i < total; i++) {
+            extendedList.push(baseShuffle[i % n]);
+        }
+    }
+
+    // 根据当前视频在 extendedList 中的位置，只旋转不重建
+    function rotateExtendedList(idx) {
+        const n = baseShuffle.length;
+        if (n === 0) return;
+        // 找到 videos[idx] 在 baseShuffle 中的位置
+        const pos = baseShuffle.indexOf(videos[idx]);
+        // 右旋 extendedList 使 baseShuffle[pos] 移到 extendedList[5]
+        // 需 new[5] = old[pos]，即 (5+k) % n = pos，k = (5-pos) % n ≥ 0
+        const k = (5 - pos + n) % n;
+        const total = WINDOW_SIZE + 10;
+        extendedList = extendedList.slice(total - k).concat(extendedList.slice(0, total - k));
+    }
+
+    // 设置当前播放索引
+    function setPlaylistWindow(targetIdx) {
+        if (videos.length === 0) { playlistWindow = []; syncAppState(); return; }
+        targetIdx = Math.max(0, Math.min(videos.length - 1, targetIdx));
+        if (baseShuffle.length === 0 || baseShuffle.length !== videos.length) {
+            buildBaseShuffle();  // 首次或 videos 变化
+        }
+        rotateExtendedList(targetIdx);
+        // extendedList[5] 固定是当前视频 videos[targetIdx]，前后各取5个
+        playlistWindow = [];
+        for (let i = 5; i >= 1; i--) playlistWindow.push(extendedList[5 - i]);
+        playlistWindow.push(extendedList[5]);
+        for (let i = 1; i <= 5; i++) playlistWindow.push(extendedList[5 + i]);
+        activeIndex = targetIdx;
+        syncAppState();
     }
 
     function initPlaylistWindow() {
-        // 前5格：videos[activeIndex-5 .. activeIndex-1]（不足填null，已见过的不重复）
-        const before = [];
-        const used = new Set();
-        for (let i = 5; i >= 1; i--) {
-            const idx = activeIndex - i;
-            if (idx >= 0) { before.push(videos[idx]); used.add(videos[idx].name); }
-            else before.push(null);
-        }
-        // 当前
-        const current = videos[activeIndex] || null;
-        // 后5格：videos[activeIndex+1 .. activeIndex+5]（不足填null）
-        const after = [];
-        for (let i = 1; i <= 5; i++) {
-            const idx = activeIndex + i;
-            if (idx < videos.length) { after.push(videos[idx]); used.add(videos[idx].name); }
-            else after.push(null);
-        }
-        // 补满所有 null 位（随机不重复）
-        const w = [...before, current, ...after];
-        let fill = randomFill();
-        let fi = 0;
-        for (let i = 0; i < WINDOW_SIZE; i++) {
-            if (!w[i]) {
-                if (fi >= fill.length) fill = randomFill(), fi = 0;
-                w[i] = fill[fi++] || null;
-            }
-        }
-        playlistWindow = w;
-        syncAppState();
-    }
-
-    // 窗口中间格（索引5）为当前视频。将 videos[targetIdx] 置于窗口中间，前后各取最多5个，
-    // 已超出部分用随机视频填充（不重复）。
-    function setPlaylistWindow(targetIdx) {
-        targetIdx = Math.max(0, Math.min(videos.length - 1, targetIdx));
-        const w = [];
-        // 前5格
-        for (let i = 5; i >= 1; i--) {
-            const idx = targetIdx - i;
-            w.push(idx >= 0 ? videos[idx] : null);
-        }
-        // 当前
-        w.push(videos[targetIdx]);
-        // 后5格
-        for (let i = 1; i <= 5; i++) {
-            const idx = targetIdx + i;
-            w.push(idx < videos.length ? videos[idx] : null);
-        }
-        // 补满空位（随机不重复）
-        let fill = randomFill();
-        let fillPos = 0;
-        for (let i = 0; i < WINDOW_SIZE; i++) {
-            if (!w[i]) {
-                // 填充池用完则重新洗牌
-                if (fillPos >= fill.length) fill = randomFill(), fillPos = 0;
-                w[i] = fill[fillPos++] || null;
-            }
-        }
-        playlistWindow = w;
-        syncAppState();
+        buildBaseShuffle();
+        setPlaylistWindow(0);
     }
 
     function syncAppState() {
@@ -147,7 +127,7 @@
             windowSize: playlistWindow.length,
         };
         window._allVideoNames = videos.map(v => v.name);
-        // 暴露关键变量供测试读取
+        window._extendedList = extendedList.map(v => v ? v.name : null);
         window._playlistWindow = playlistWindow;
         window._activeIndex = activeIndex;
     }
@@ -340,6 +320,9 @@
         }
 
         initPlaylistWindow();  // 等价于 setPlaylistWindow(activeIndex)，保持初始化入口
+        // shuffle 后 playlistWindow[5] 不一定等于 videos[activeIndex]（因为 shuffle）
+        // 所以 shuffle 后必须显式加载 videos[activeIndex]
+        loadVideoForIndex(activeIndex);
 
         feeds.forEach(feed => {
             for (let c = 0; c < FEED_COPIES; c++) {
