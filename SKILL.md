@@ -17,7 +17,7 @@ description: 开发、测试、发现 bug、变更维护容器内 Web App 8082�
 
 - **端口**：固定 `8082`，`server.js` 必须监听 `0.0.0.0`
 - **项目目录**：`/home/agent/.claude/workspace/project`
-- **当前 HEAD**：`main` → `996ebbc`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 50 MiB + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存，详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
+- **当前 HEAD**：`main` → `1e67fb6`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 50 MiB + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 前 5/当前/后 5 播放窗口 + 空缺随机填充，详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
 - **运行环境**：Node.js v20+（原生 `http`，无外部依赖）；claude CLI 位于 `/usr/local/bin/claude`；ffmpeg 5.1 位于 `/usr/bin/ffmpeg`
 - **平台惯例**：全部在 `systemreadme.md`
 
@@ -119,8 +119,36 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 服务端无需改动：`VIDEO_EXTS` 与 MIME 已含 `.webm`/`video/webm`。
 - 验证（`/tmp/verify_compress_before_upload.py`）：3.28MB mp4 → 存为 `cbt_src.webm`（1.33MB，省 59%），ffprobe 见 vp9+opus 双轨，`volumedetect` mean ≈ -21 dB（音频非静音）；取消勾选 → 原样传 mp4（`/tmp/verify_compress_unchecked.py`）。
 
-### 前端单播放器 + 左右滑动面板
-- 单一 `<div class="feed">` 占据主屏；左右两个 `<aside class="side-panel">` 滑动面板（信息 / 设置）
+### 前端三页水平架构 + 抖音式纵向翻页
+- `<div id="pages">` 横向 300% 宽，包含 3 个 page：`#feed0`（信息页）/ `#feed1`（中间 feed）/ `#feed2`（设置页）
+- 三页切换：`pagesEl.style.setProperty('--page', n)`，CSS `transform: translateX(calc(-1 * var(--page) * (100% / 3)))` + `transition: transform .35s`
+- 中间 feed 内：`<div class="feed" id="mainFeed">` + 上传弹窗 + 视频容器 `#videoContainer` + 进度标签 `#seekLabel`
+
+### 抖音式纵向翻页（手势驱动，无原生滚动）
+- CSS 上 `.feed` 设 `overflow-y: hidden; touch-action: none`，移除 `scroll-snap` 相关属性，原生滚动完全由 JS 接管
+- `vertFollow(dy)` 跟手：`scrollTop = vertBaseTop - dy` 实时映射拖拽位移
+- `vertRelease(dy)` 松手吸附：`easeOutCubic` 动画到目标位置（`h * 0.25` 吸附距离），更新 `activeIndex`
+- wheel 翻页：滚轮事件映射到上下翻页
+
+### 横向翻页阈值（视口自适应 + 方向锁定 + 速度豁免）
+- `SWIPE_THRESHOLD = Math.max(240, Math.round(window.innerWidth * 0.35))`（视口 1280 时 ≈ 448，相对视口自适应）
+- `AXIS_LOCK_DIST = 18` + `axisLock` 状态变量（null | 'h' | 'v'）：touchmove/mousemove 中首次显著位移后锁定主轴，斜向/微抖不再误判横向
+- `VELOCITY_THRESHOLD = 0.5` px/ms；`finishSwipe` 速度豁免：`|dx| >= 0.6 * 阈值` 且 `|dx|/dt > 0.5` 即翻页（快速轻扫仍可有意翻页）
+- `touchstart` / `mousedown` 重置 `axisLock`
+- 纵向吸附距离 `h * 0.25` 不变
+
+### 播放窗口（前 5 + 当前 + 后 5，共 11 格）
+- `WINDOW_SIZE = 11`；`playlistWindow` 数组
+- `initPlaylistWindow()`：初始化 11 格窗口（前 5 按实际位置取，不足填 null，已见过不重复）
+- `setPlaylistWindow(targetIdx)`：核心函数，把 `videos[targetIdx]` 放到窗口中间，前后各 5 格从 videos 实际位置取，超出部分 `randomFill()` 用 Fisher–Yates 从剩余池随机填充（池耗尽重新洗）
+- `applyIndex(idx)` 调用 `setPlaylistWindow(targetIdx)`
+- `renderFeeds` 渲染 `playlistWindow × FEED_COPIES`（共 33 格）
+- `scrollToIndex` 固定到 `MIDDLE_CURRENT_TOP = WINDOW_SIZE + 5 = 16`（中间副本当前视频）
+- `feedReady` 标志屏蔽初始化期间 scroll handler 误触发
+- `syncAppState()` 暴露 `window._appState` / `_playlistWindow` / `_activeIndex` 供测试读取
+- 调试教训：`initPlaylistWindow` 循环 `i <= 10` 误生成了 16 格（改为 `i <= 5`）；`IIFE` 局部变量无法从外部访问，改用 `window._playlistWindow` 暴露；scroll handler 在 `renderFeeds` 期间误调用 `applyIndex` 导致窗口变形，加 `feedReady` 标志解决
+
+### 面板与播放
 - 面板占半屏：`.side-panel { width: 50%; min-width: 240px }`；feed 偏移 `left/right: 50%`
 - 信息面板（左）：文件名 / 大小 / 时间 / 进度 / 索引
 - 设置面板（右）：视频数量 / 随机播放开关 / 自动播放开关 / 播放速度（0.5x / 1x / 1.5x / 2x / 3x，默认 1.5x）
@@ -137,10 +165,12 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   - 按需缓存：`updateVideoCache()` 只对**当前活动视频**（`realIdx === activeIndex`）保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免浏览器把整个 feed 都缓冲、也避免远处视频出声；hls.js 也只在活动视频上 attach（`manageHls` 用 `isActive` 而非 prev/next 窗口判断）
 
 ### 纵向无尽头滚动（3 副本 + 隐形回绕）
-- 每个 feed 渲染 `FEED_COPIES=3` 份视频列表（中间份为「真实」位置，`scrollToIndex` 定位到 `n + idx`），上/下滑到首尾都不会卡住，可无限循环
-- 滚动进入前/后 ghost 副本（`vis < n` 或 `vis >= 2n`）时，立即 `scrollTop` 跳回中间份同一真实视频（内容相同，肉眼无跳变），并更新 `activeIndex`
+- `FEED_COPIES=3` DOM 副本存放 `playlistWindow` 渲染（11 × 3 = 33 格）
+- 中间份为「真实」位置，`scrollToIndex` 定位到 `MIDDLE_CURRENT_TOP = WINDOW_SIZE + 5 = 16`
+- 上/下滑到首尾都不会卡住，可无限循环
+- 滚动进入前/后 ghost 副本时，立即 `scrollTop` 跳回中间份同一真实视频（内容相同，肉眼无跳变），并更新 `activeIndex`
 - 顺序固定：`videos` 数组顺序浏览期间不变，上滑严格逆序回放刚才的视频（历史顺序），回绕后继续同一循环序列
-- 程序化滚动抑制：`scrollToIndex` 给目标 feed 打 `_progScrollUntil`（60ms）时间戳，scroll 处理函数忽略该窗口内的自触发事件；不再用全局 `suppressScroll`，因此用户快速连续滑动源 feed 也能被处理、不会漏掉回绕
+- 程序化滚动抑制：`scrollToIndex` 给目标 feed 打 `_progScrollUntil`（60ms）时间戳，scroll 处理函数忽略该窗口内的自触发事件
 
 ## HLS 流式播放（已实现，详见 `logs/agent_tui.summary.md`）
 
@@ -239,6 +269,8 @@ git log --format="%h %s" -1 >> logs/commit.txt
 - [ ] `POST /compress/:filename` → 200 `{ok,before,after,savedPct}`，输出为 H.264 + faststart（moov 在 mdat 前）；已压缩的小视频 → `skipped:true`
 - [ ] 路径穿越 `..%2F` → 404
 - [ ] `node --check server.js public/app.js` 语法通过
-- [ ] 前端三页 translateX 切换 + 三页同步播放（`logs/run.log` 无报错）
+- [ ] 前端三页 translateX 切换 + 中间抖音式纵向翻页（手跟踪 + 吸附 + wheel）+ 三页同步播放（`logs/run.log` 无报错）
 - [ ] **永不静音**：进任意页拖拽滑动 → leader 始终有声音；侧页 3 倍速（页 0 倒退 / 页 2 前进）；位置缓存工作（离开再回来续播）
+- [ ] 播放窗口 WINDOW_SIZE=11（`window._playlistWindow.length === 11`），空缺 Fisher–Yates 随机填充
+- [ ] 横向翻页阈值视口自适应（1280 时 ≈ 448），方向锁定后斜向不再误翻页
 - [ ] `logs/run.log` 有运行输出

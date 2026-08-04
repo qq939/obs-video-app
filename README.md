@@ -1,20 +1,23 @@
 # OBS — 视频对象存储 Web App
 
-监听 **8082** 端口的视频上传 / 播放服务，前端为抖音式竖屏滑动视频流（scroll-snap），
-**单一播放器 + 左右侧栏滑动面板**（CSS translateX）：左滑打开信息面板，右滑打开设置面板，
-中间是主 feed。**纯手势操作**，没有任何按钮。后端为 Node.js 内置 `http` 模块实现，
+监听 **8082** 端口的视频上传 / 播放服务，前端为**抖音式竖屏翻页视频流**（手跟踪 + 吸附动画）
++ **三页水平滑动架构**（CSS translateX）：信息页 / 中间 feed / 设置页。
+**纯手势操作**，没有任何按钮。后端为 Node.js 内置 `http` 模块实现，
 无任何第三方依赖。同时保留平台要求的 `/ask/claude` 问答接口。
 
 项目根目录：`/home/agent/.claude/workspace/project`
-当前 git HEAD：`main` → `996ebbc`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存，详情见 `logs/agent_tui.summary.md`）
+当前 git HEAD：`main` → `1e67fb6`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 前5/当前/后5 播放窗口 + 空缺随机填充，详情见 `logs/agent_tui.summary.md`）
 
 ---
 
 ## 功能概览
 
-- 🎬 **竖屏视频流**：全屏滑动、逐条自动播放（scroll-snap + IntersectionObserver）
+- 🎬 **抖音式竖屏翻页视频流**：手跟踪 + `easeOutCubic` 吸附动画 + wheel 翻页，原生滚动完全由 JS 接管（`overflow-y: hidden; touch-action: none`），无 scroll-snap
+- 🔁 **三页水平架构**：`<div id="pages">` 横向 300% 宽，CSS `translateX(calc(-1 * var(--page) * (100% / 3)))` + `transition: transform .35s` 切页（0=信息 / 1=中间 feed / 2=设置）
+- 🎯 **翻页阈值视口自适应**：`SWIPE_THRESHOLD = Math.max(240, round(innerWidth * 0.35))`（视口 1280 时 ≈ 448），加方向锁定（`AXIS_LOCK_DIST=18`）+ 速度豁免（`VELOCITY_THRESHOLD=0.5 px/ms`），左右滑动不再误翻页
+- 🪟 **前 5 / 当前 / 后 5 播放窗口**：`WINDOW_SIZE=11`，`playlistWindow` 数组；前后各 5 格从 videos 实际位置取，超出部分 Fisher–Yates 随机填充（池耗尽重新洗），`scrollToIndex` 固定到中间副本
 - 🔀 **随机播放**：`GET /videos` 每次返回随机顺序（Fisher–Yates），前端随机开关可重排
-- 📐 **单播放器 + 左右滑动面板**：主 feed 占满屏，左滑打开信息面板（文件名/大小/时间/进度/索引），右滑打开设置面板（视频数量/随机开关/自动播放开关/播放速度）
+- 📐 **左右侧栏**：左滑打开信息面板（文件名/大小/时间/进度/索引），右滑打开设置面板（视频数量/随机开关/自动播放开关/播放速度）
 - 👆 **纯手势操作**：无任何按钮 — 长按空白处打开上传弹窗，左右滑切换面板，点击/双击/拖动控制视频
 - ⬆️ **分片上传**：`init → chunk → complete`，支持**断点续传**（按文件 sha256 匹配未完成会话），弹窗内点击或拖拽文件即可
 - 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传
@@ -28,7 +31,6 @@
 - 🪶 **无感自动播放**：浏览器要求 user gesture 才能带声音播放；监听 `pointermove` / `wheel` / `scroll` / `touchmove` / `keydown`（任一发生）即视为手势，自动 `updatePlayback()` 触发播放 —— 用户**不用点击屏幕**，鼠标移到页面上就自动开播
 - 📐 **侧栏占半屏**：左右信息/设置 panel `width: 50%`（最小 240 px），feed 在 panel 打开时偏移 50%
 - 🚫 **按需缓存**：只当前活动视频持有 `preload='metadata'`，其余 `preload='none'` + `pause()`，避免浏览器预加载整个 feed、避免无声泄漏；hls.js 也只挂在活动视频上
-- 🔁 **纵向无尽头滚动**：`FEED_COPIES=3` DOM 复制 + 隐形回绕，真实视频在中间份
 - 💬 **Claude Ask**：保留 `/ask/claude`，经 `run_claude.js` 调用 claude CLI
 
 ---
@@ -242,20 +244,40 @@ project/
 
 ---
 
-## 前端交互（单播放器 + 左右滑动面板）
+## 前端交互（三页水平架构 + 抖音式纵向翻页）
 
-`public/index.html` 只有一个 `<div class="feed">` 占据主屏，左右两个 `<aside class="side-panel">` 滑动面板：
+`public/index.html` 用 `<div id="pages">` 横向 300% 宽，包含三个 page：
 
-| 面板 | 内容 | 触发手势 |
+| 页面 | 内容 | 触发手势 |
 |------|------|---------|
-| 信息面板（左）| 文件名 / 大小 / 时间 / 进度 / 索引 | 主屏**左滑** |
-| 设置面板（右）| 视频数量 / 随机开关 / 自动播放开关 / 播放速度（0.5x/1x/1.5x/2x/3x） | 主屏**右滑** |
+| 信息页（左，`#feed0`）| 文件名 / 大小 / 时间 / 进度 / 索引 | 主屏**左滑** |
+| 中间 feed（`#feed1`）| 抖音式竖屏翻页视频流 | 上下拖拽 / wheel |
+| 设置页（右，`#feed2`）| 视频数量 / 随机开关 / 自动播放开关 / 播放速度（0.5x/1x/1.5x/2x/3x） | 主屏**右滑** |
 | 上传弹窗 | 选择文件 / 拖拽 / 进度 / 压缩后上传勾选 | **长按空白处** |
+
+三页切换：`pagesEl.style.setProperty('--page', n)`，CSS `transform: translateX(calc(-1 * var(--page) * (100% / 3)))` + `transition: transform .35s`。
 
 交互要点：
 
 - **纯手势**：UI 没有任何按钮 — 上传长按空白处，面板左右滑，视频点击/双击/拖动
-- **单播放器**：feed 内每视频只渲染一份（`FEED_COPIES=3` DOM 副本是用于无限滚动，真实视频在中间份），左右面板不重复渲染 feed
+- **抖音式纵向翻页（手势驱动，无原生滚动）**：
+  - `.feed` 设 `overflow-y: hidden; touch-action: none` 屏蔽原生滚动；CSS 移除 `scroll-snap` 相关属性
+  - `vertFollow(dy)` 跟手：`scrollTop = vertBaseTop - dy` 实时映射拖拽
+  - `vertRelease(dy)` 松手吸附：`easeOutCubic` 动画到目标位置（`h * 0.25` 吸附距离），更新 `activeIndex`
+  - wheel 翻页：滚轮事件映射到上下翻页
+- **横向翻页阈值视口自适应**：
+  - `SWIPE_THRESHOLD = Math.max(240, Math.round(window.innerWidth * 0.35))`（视口 1280px 时 ≈ 448）
+  - `AXIS_LOCK_DIST = 18` + `axisLock` 状态变量：touchmove/mousemove 中首次显著位移后锁定主轴（h / v），斜向/微抖不再误判横向
+  - `VELOCITY_THRESHOLD = 0.5` px/ms；`finishSwipe` 速度豁免：`|dx| >= 0.6 * 阈值` 且 `|dx|/dt > 0.5` 即翻页
+  - `touchstart` / `mousedown` 重置 `axisLock`
+- **前 5 / 当前 / 后 5 播放窗口**（`WINDOW_SIZE = 11`）：
+  - `playlistWindow` 数组；`initPlaylistWindow()` 初始化 11 格（前 5 按实际位置取，不足填 null，已见过不重复）
+  - `setPlaylistWindow(targetIdx)`：把 `videos[targetIdx]` 放到窗口中间，前后各 5 格从 videos 实际位置取，超出部分 `randomFill()` 用 Fisher–Yates 从剩余池随机填充（池耗尽重新洗）
+  - `applyIndex(idx)` 调用 `setPlaylistWindow(targetIdx)`
+  - `renderFeeds` 渲染 `playlistWindow × FEED_COPIES`（共 33 格）
+  - `scrollToIndex` 固定到 `MIDDLE_CURRENT_TOP = WINDOW_SIZE + 5 = 16`（中间副本当前视频位置）
+  - `feedReady` 标志屏蔽初始化期间 scroll handler 误触发
+  - `syncAppState()` 暴露 `window._appState` / `_playlistWindow` / `_activeIndex` 供测试读取
 - **面板不打断播放**：打开左/右面板时视频继续在主屏播放（leader 不变，进度不重置）
 - **自动播放**：默认开启；`updatePlayback()` 对 leader `muted=false` 后 `play()`；浏览器 autoplay 策略拒绝时等首个手势
 - **无感自动播放**：手势监听 `pointermove` / `wheel` / `scroll` / `touchmove` / `keydown` 任一即视为 user gesture（不需要「按下」类事件，鼠标移动到页面即可解锁）
@@ -263,7 +285,7 @@ project/
 - **播放速度**：设置面板按钮（0.5x / 1x / 1.5x / 2x / 3x，默认 1.5x），通过 `video.playbackRate` 设置
 - **位置缓存**：`positions` Map（视频名 → 秒）。切走前 `recordActivePosition()` 记录；切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek）
 - **按需缓存**：`updateVideoCache()` 只对当前活动视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`；hls.js 也只挂在活动视频上（避免远处视频出声、避免远端幽灵拉流）
-- **纵向无尽头滚动**：`FEED_COPIES=3` 副本，中间份为「真实」位置；进 ghost 副本立即 `scrollTop` 跳回中间份，肉眼无跳变
+- **纵向无尽头滚动**：`FEED_COPIES=3` DOM 副本存放 `playlistWindow` 渲染（11 × 3 = 33 格），中间份为「真实」位置；进 ghost 副本立即 `scrollTop` 跳回中间份，肉眼无跳变
 
 ---
 
@@ -296,6 +318,6 @@ git log --format="%h %s" -1 >> logs/commit.txt
 
 - `/ask/claude` 在**当前主会话正在运行**时，二次 claude CLI 会因会话占用而等待；
   该端点设计用于宿主控制面板在主会话空闲时调用。
-- 当前 HEAD `996ebbc` 已实现：HLS 全自动 + 旋转 90° 修复 + 按字节切段（50 MiB/段）+ UTC+8 05:00 cron + mov/mkv 一律重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存。完整方案、调试细节、经验教训
+- 当前 HEAD `1e67fb6` 已实现：HLS 全自动 + 旋转 90° 修复 + 按字节切段（50 MiB/段）+ UTC+8 05:00 cron + mov/mkv 一律重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 前 5/当前/后 5 播放窗口 + 空缺随机填充。完整方案、调试细节、经验教训
   参见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
 - 更多容器部署细节参见 `hermit-container-debugging-guide.md`。
