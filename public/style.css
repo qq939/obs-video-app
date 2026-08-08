@@ -382,6 +382,39 @@ html, body {
 .viewport.edge-hint-active .edge-hint-left { opacity: 1; }
 .viewport.edge-hint-active .edge-hint-right { opacity: 1; }
 
+/* ---------------- floating upload button (right edge) ---------------- */
+.fab-upload {
+    position: fixed;
+    right: 16px;
+    bottom: calc(50% - 28px);
+    transform: translateY(50%);
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    background: linear-gradient(135deg, #fe2c55, #ff6680);
+    color: #fff;
+    font-size: 28px;
+    line-height: 1;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(254,44,85,.45), 0 2px 4px rgba(0,0,0,.18);
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+}
+.fab-upload:hover {
+    transform: translateY(50%) scale(1.06);
+    box-shadow: 0 6px 18px rgba(254,44,85,.55), 0 2px 6px rgba(0,0,0,.22);
+}
+.fab-upload:active {
+    transform: translateY(50%) scale(.94);
+}
+.fab-upload.hidden { display: none; }
+
 /* ---------------- modal ---------------- */
 .modal {
     position: fixed;

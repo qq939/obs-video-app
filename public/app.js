@@ -44,6 +44,7 @@
     const progressFill = document.getElementById('progressFill');
     const progressText = document.getElementById('progressText');
     const cancelBtn = document.getElementById('cancelBtn');
+    const fabUpload = document.getElementById('fabUpload');
 
     // ---------------------------------------------------------------- state
     let videos = [];
@@ -1002,6 +1003,18 @@
     }
 
     cancelBtn.addEventListener('click', () => { if (currentAbort) { currentAbort.abort(); currentAbort = null; } uploadModal.classList.add('hidden'); });
+    // Floating upload button (right edge) — open upload modal without long-press
+    if (fabUpload) {
+        let fabDown = false;
+        let fabMoved = false;
+        const onFabClick = (e) => { e.stopPropagation(); uploadModal.classList.remove('hidden'); };
+        fabUpload.addEventListener('click', onFabClick);
+        // Don't trigger panel swipe when tapping the FAB
+        fabUpload.addEventListener('touchstart', (e) => { fabDown = true; fabMoved = false; e.stopPropagation(); }, { passive: true });
+        fabUpload.addEventListener('touchmove', (e) => { fabMoved = true; e.stopPropagation(); }, { passive: true });
+        fabUpload.addEventListener('touchend', (e) => { if (fabDown && !fabMoved) { e.preventDefault(); e.stopPropagation(); onFabClick(e); } fabDown = false; });
+        fabUpload.addEventListener('mousedown', (e) => e.stopPropagation());
+    }
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
