@@ -531,7 +531,9 @@
         }
     }
 
-    // Progress bar update
+    // Progress bar update + 实时同步 playlistWindow[5].t 为当前播放进度
+    // 切换视频源/上滑/下滑时会把这个 t 写入即将离开的位置（见 shiftWindow / loadVideoForIndex），
+    // 保证 11 格队列里每一格的 t 永远反映"该视频当时被播放到的时刻"
     setInterval(() => {
         if (videos.length === 0) return;
         if (video.duration && isFinite(video.duration) && video.duration > 0) {
@@ -541,6 +543,15 @@
             seekFill.style.width = pctStr;
             seekThumb.style.left = pctStr;
             seekLabel.textContent = fmtClock(video.currentTime) + ' / ' + fmtClock(video.duration);
+            // 实时保存当前播放进度到 playlistWindow 中间格 (uuid, t)
+            if (playlistWindow.length === WINDOW_SIZE && playlistWindow[5]) {
+                const t = video.currentTime;
+                if (isFinite(t) && t >= 0) {
+                    if (Math.abs((playlistWindow[5].t || 0) - t) >= 0.1) {
+                        playlistWindow[5].t = t;
+                    }
+                }
+            }
         }
     }, 500);
 
