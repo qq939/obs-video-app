@@ -62,7 +62,28 @@
     let currentAbort = null;
     let longPressTimer = null;
     let longPressMoved = false;
-    const positions = new Map();
+    const positions = new Map();  // 内存缓存，刷新丢失
+    const POS_KEY = 'obs-play-pos-v1';  // localStorage key
+
+    // 从 localStorage 恢复进度（容器存续内持久化）
+    function localStorage2positions() {
+        try {
+            const raw = localStorage.getItem(POS_KEY);
+            if (!raw) return;
+            const obj = JSON.parse(raw);
+            if (obj && typeof obj === 'object') {
+                for (const [k, v] of Object.entries(obj)) positions.set(k, v);
+            }
+        } catch (_) {}
+    }
+
+    // 进度写入 localStorage
+    function positions2localStorage() {
+        try {
+            const obj = Object.fromEntries(positions.entries());
+            localStorage.setItem(POS_KEY, JSON.stringify(obj));
+        } catch (_) {}
+    }
 
     // ──────────────────────────── playlist window（11格播放信息队列）────────────────────────
     // playlistWindow = 固定11格 (uuid, t) 队列。
@@ -82,12 +103,14 @@
             _shufflePool(_fillPool);
         }
         const v = _fillPool.pop();
-        return { uuid: v ? v.name : null, t: _randomTime(v) };
+        return { uuid: v ? v.name : null, t: _timeFor(v) };
     }
 
-    // 随机进度 t（0..duration），未知时取 [0, 60)
-    function _randomTime(v) {
-        const dur = (v && Number.isFinite(v.duration)) ? v.duration : 60;
+    // 进度 t：优先 positions 缓存（容器存续内持久化），无缓存则随机
+    function _timeFor(v) {
+        if (!v) return 0;
+        if (positions.has(v.name)) return positions.get(v.name);
+        const dur = (Number.isFinite(v.duration)) ? v.duration : 60;
         return Math.max(0, Math.random() * Math.max(1, dur - 0.5));
     }
 
@@ -120,12 +143,12 @@
     function initPlaylistWindow() {
         if (videos.length === 0) { playlistWindow = []; _fillPool = []; syncAppState(); return; }
         const w = new Array(WINDOW_SIZE);
-        // 前5格 (uuid, t) 随机
+        // 前5格 (uuid, t)：有缓存用缓存，无缓存随机
         for (let i = 0; i < 5; i++) w[i] = _makeRandomEntry();
-        // 当前：videos[activeIndex]，进度也随机
+        // 当前：videos[activeIndex]，有缓存用缓存，无缓存随机
         const cur = videos[activeIndex];
-        w[5] = { uuid: cur ? cur.name : null, t: _randomTime(cur) };
-        // 后5格 (uuid, t) 随机
+        w[5] = { uuid: cur ? cur.name : null, t: _timeFor(cur) };
+        // 后5格 (uuid, t)：有缓存用缓存，无缓存随机
         for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
         playlistWindow = w;
         syncAppState();
@@ -165,7 +188,7 @@
         const w = new Array(WINDOW_SIZE);
         for (let i = 0; i < 5; i++) w[i] = _makeRandomEntry();
         const cur = videos[targetIdx];
-        w[5] = { uuid: cur ? cur.name : null, t: _randomTime(cur) };
+        w[5] = { uuid: cur ? cur.name : null, t: _timeFor(cur) };
         for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
         playlistWindow = w;
         activeIndex = targetIdx;
@@ -356,6 +379,9 @@
     function renderFeeds() {
         feeds.forEach(f => { f.innerHTML = ''; });
 
+        // 从 localStorage 恢复进度（容器存续内持久化，刷新页面后仍生效）
+        localStorage2positions();
+
         if (videos.length === 0) {
             feeds.forEach(f => { f.innerHTML = EMPTY_HTML; });
             videoLabel.textContent = '';
@@ -499,7 +525,10 @@
         if (videos.length === 0) return;
         const v = videos[activeIndex];
         if (!v) return;
-        if (isFinite(video.currentTime) && video.currentTime > 0.5) positions.set(v.name, video.currentTime);
+        if (isFinite(video.currentTime) && video.currentTime > 0.5) {
+            positions.set(v.name, video.currentTime);
+            positions2localStorage();  // 持久化到 localStorage
+        }
     }
 
     // ---------------------------------------------------------------- playback
