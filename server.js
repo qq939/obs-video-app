@@ -35,12 +35,10 @@ const HLS_TIMEOUT_MS = 60 * 1000;
 // ready when it matches. Bumping the version (or the source changing) makes
 // every asset regenerate automatically — every feature change applies to all
 // videos, no manual "转HLS" button needed.
-const HLS_GEN_VERSION = 3;
-// 50 MiB per TS segment. ffmpeg HLS muxer supports byte-based segmentation
-// (-hls_segment_size); GOP-aligned so the actual segment size may vary a bit,
-// but the average stays close to 50 MiB. No time-based fallback: user explicitly
-// asked for size-based chunking.
-const HLS_SEGMENT_BYTES = 50 * 1024 * 1024;
+const HLS_GEN_VERSION = 4;
+// 4 MiB per TS segment: 与 B 站/YouTube 同水平，单段 ~5-10 秒 @ 4-8 Mbps。
+// 段小 = hls.js 缓冲更稳 / seek 更准 / 缓存复用更高；段大 = 卡顿
+const HLS_SEGMENT_BYTES = 4 * 1024 * 1024;
 
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogv', '.mov', '.m4v', '.mkv']);
 const MIME = {

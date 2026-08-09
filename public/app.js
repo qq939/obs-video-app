@@ -476,7 +476,7 @@
     function attachHls(v) {
         if (!window.Hls || !window.Hls.isSupported()) return;
         if (hlsInstance) { try { hlsInstance.destroy(); } catch(e){} hlsInstance = null; }
-        hlsInstance = new window.Hls({ maxBufferLength: 30 });
+        hlsInstance = new window.Hls({ maxBufferLength: 120 });
         hlsInstance.loadSource(v.hls);
         hlsInstance.attachMedia(video);
         let netR = 0, medR = 0;
