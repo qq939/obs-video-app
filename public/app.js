@@ -82,10 +82,13 @@
             _shufflePool(_fillPool);
         }
         const v = _fillPool.pop();
-        // 视频时长可能是 NaN/未知；保守取 [0, max(0, duration-0.5)]；未知时取 [0, 60)
+        return { uuid: v ? v.name : null, t: _randomTime(v) };
+    }
+
+    // 随机进度 t（0..duration），未知时取 [0, 60)
+    function _randomTime(v) {
         const dur = (v && Number.isFinite(v.duration)) ? v.duration : 60;
-        const t = Math.max(0, Math.random() * Math.max(1, dur - 0.5));
-        return { uuid: v ? v.name : null, t };
+        return Math.max(0, Math.random() * Math.max(1, dur - 0.5));
     }
 
     // 取一个随机 uuid 的视频对象（不消耗 _fillPool）
@@ -119,9 +122,9 @@
         const w = new Array(WINDOW_SIZE);
         // 前5格 (uuid, t) 随机
         for (let i = 0; i < 5; i++) w[i] = _makeRandomEntry();
-        // 当前：videos[activeIndex] + 缓存或 0
+        // 当前：videos[activeIndex]，进度也随机
         const cur = videos[activeIndex];
-        w[5] = { uuid: cur ? cur.name : null, t: (cur && positions.get(cur.name)) || 0 };
+        w[5] = { uuid: cur ? cur.name : null, t: _randomTime(cur) };
         // 后5格 (uuid, t) 随机
         for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
         playlistWindow = w;
@@ -162,7 +165,7 @@
         const w = new Array(WINDOW_SIZE);
         for (let i = 0; i < 5; i++) w[i] = _makeRandomEntry();
         const cur = videos[targetIdx];
-        w[5] = { uuid: cur ? cur.name : null, t: (cur && positions.get(cur.name)) || 0 };
+        w[5] = { uuid: cur ? cur.name : null, t: _randomTime(cur) };
         for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
         playlistWindow = w;
         activeIndex = targetIdx;

@@ -29,7 +29,7 @@ const TIMEOUT_MS = 3600 * 1000;
 // HLS output lives in its own top-level folder (sibling of obs/), so the
 // generated m3u8 + ts files never pollute the obs/ video storage.
 const HLS_DIR = path.join(WORKSPACE_DIR, 'hls');
-const HLS_TIMEOUT_MS = 60 * 1000;
+const HLS_TIMEOUT_MS = 600 * 1000;  // 10min，大视频 remux 需要更长时间
 // Generation version of the HLS output. Each HLS dir stores a meta.json with
 // this version + the source file's size; hlsExists() only counts an HLS as
 // ready when it matches. Bumping the version (or the source changing) makes
@@ -138,10 +138,10 @@ function sha256File(filePath) {
  * use for browser playback: broad codec compatibility + instant start.
  */
 function runFfmpeg(args, opts = {}) {
-    return new Promise((resolve, reject) => {
-        const spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'] };
-        if (opts.cwd) spawnOpts.cwd = opts.cwd;
-        const child = spawn('ffmpeg', args, spawnOpts);
+    const spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'] };
+    if (opts.cwd) spawnOpts.cwd = opts.cwd;
+    const child = spawn('ffmpeg', args, spawnOpts);
+    const p = new Promise((resolve, reject) => {
         let stderr = '';
         child.stderr.on('data', (d) => { stderr += d.toString(); });
         child.on('error', (err) => reject(new Error('ffmpeg not available: ' + err.message)));
@@ -150,6 +150,8 @@ function runFfmpeg(args, opts = {}) {
             else reject(new Error('ffmpeg exit ' + code + ': ' + stderr.split('\n').slice(-3).join(' ').trim()));
         });
     });
+    p.kill = () => { try { child.kill('SIGKILL'); } catch(e) {} };
+    return p;
 }
 
 async function compressVideo(filePath) {
@@ -380,11 +382,12 @@ async function doGenerateHls(name) {
     }
 }
 
-function withTimeout(p, ms) {
+function withTimeout(p, ms, onTimeout) {
+    let timer;
     return Promise.race([
         p,
-        new Promise((_, rej) => setTimeout(() => rej(new Error('hls generation timeout')), ms))
-    ]);
+        new Promise((_, rej) => { timer = setTimeout(() => { if (onTimeout) onTimeout(); rej(new Error('hls generation timeout')); }, ms); })
+    ]).finally(() => clearTimeout(timer));
 }
 
 function listVideoFiles() {
