@@ -6,6 +6,7 @@ services:
       - "80:8082"
     volumes:
       - "${OBS_HOST_DIR:-./obs}:/home/agent/.claude/workspace/project/obs"
+      - "${OBS_SHARDS_DIR:-./obs_shards}:/home/agent/.claude/workspace/project/hls"
     restart: unless-stopped
     healthcheck:
       test:
