@@ -58,7 +58,7 @@
     let playing = true;
     let random = true;
     let autoplay = true;
-    let playbackSpeed = 1.5;
+    let playbackSpeed = 1;
     let currentAbort = null;
     let longPressTimer = null;
     let longPressMoved = false;
@@ -333,20 +333,18 @@
         clearInterval(effectTimer);
         if (videos.length === 0) return;
 
-        if (currentPage === 2) {
-            // Settings page: 3x fast forward
-            video.playbackRate = 3;
-        } else if (currentPage === 0) {
-            // Info page: 3x rewind via manual seek
+        if (currentPage === 0) {
+            // Info page: 5x rewind via manual seek
             video.playbackRate = 1;
             effectTimer = setInterval(() => {
                 if (currentPage !== 0 || videos.length === 0) { clearInterval(effectTimer); return; }
-                video.currentTime = Math.max(0, video.currentTime - 0.3);
+                video.currentTime = Math.max(0, video.currentTime - 0.5);
                 if (video.currentTime <= 0) video.pause();
             }, 100);
         } else {
-            // Main page: normal speed
-            video.playbackRate = playbackSpeed;
+            // Main page (1) and Settings page (2): 播放速度一致，取决于设置项 playbackSpeed
+            // 长按 5x 期间仍由 fastSpeed 标志覆盖为 5
+            video.playbackRate = fastSpeed ? 5 : playbackSpeed;
         }
         updatePlayback();
     }
@@ -937,14 +935,14 @@
     document.addEventListener('mousemove', (e) => { if (seekDragging) doSeek(e.clientX); });
     document.addEventListener('mouseup', () => { seekDragging = false; });
 
-    // Speed selector
+    // Speed selector — applies to main feed (page 1) and settings (page 2)
     speedOptions.addEventListener('click', (e) => {
         const btn = e.target.closest('.speed-btn');
         if (!btn) return;
         playbackSpeed = parseFloat(btn.dataset.speed);
         speedOptions.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
-        if (currentPage === 1) { video.playbackRate = playbackSpeed; }
+        if (currentPage === 1 || currentPage === 2) { video.playbackRate = playbackSpeed; }
     });
 
     // Overlay buttons (only shown on settings page)
