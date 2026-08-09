@@ -469,6 +469,9 @@
 
         videoLabel.textContent = escapeHtml(v.name) + '  ·  ' + fmtSize(v.size);
         video.preload = 'metadata';
+        // 切源后保持用户选择的 playbackSpeed（不继承上一源的 5x 长按残留）
+        fastSpeed = false;
+        video.playbackRate = playbackSpeed;
         applyPagePlayback();
     }
 
@@ -845,9 +848,12 @@
         vertStartY = e.clientY;
         vertBaseTop = feeds[1].scrollTop;
         cancelVertAnim();
+        const onVideo = isOnVideo(e.clientX, e.clientY);
         longPressTimer = setTimeout(() => {
             longPressTimer = null;
-            if (currentPage === 1) {
+            if (onVideo) {
+                beginFastSpeed();
+            } else if (currentPage === 1) {
                 uploadModal.classList.remove('hidden');
                 progressArea.classList.add('hidden');
             }
@@ -872,6 +878,7 @@
     });
     viewport.addEventListener('mouseup', (e) => {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        endFastSpeed();
         if (!mouseDown) return;
         mouseDown = false;
         const dy = e.clientY - vertStartY;
@@ -880,6 +887,11 @@
             return;
         }
         if (!finishSwipe(e.clientX, e.clientY) && !verticalMoved) handleTap(e);
+    });
+    viewport.addEventListener('mouseleave', () => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        endFastSpeed();
+        mouseDown = false;
     });
 
     // First interaction unlocks audio
