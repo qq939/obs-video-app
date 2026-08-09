@@ -49,8 +49,10 @@
     // ---------------------------------------------------------------- state
     let videos = [];
     let activeIndex = 0;
-    // playlistWindow: 固定11格窗口，索引5为当前播放，索引0-4为"前5"，索引6-10为"后5"
-    // 每个元素为 videos 数组中的对象引用
+    // playlistWindow: 固定11格「播放信息」队列（索引5=当前播放，0-4=前5，6-10=后5）
+    // 每个元素为 {uuid, t} —— uuid 指向 videos[] 中的 name，t 为该视频当前播放进度（秒）
+    // 上滑：每个位置从右侧邻居接收 (uuid, t)，最末格补随机 (uuid, t)
+    // 下滑：每个位置从左侧邻居接收 (uuid, t)，最首格补随机 (uuid, t)
     let playlistWindow = [];
     let currentPage = 1;      // 0=info, 1=main, 2=settings
     let playing = true;
@@ -62,14 +64,35 @@
     let longPressMoved = false;
     const positions = new Map();
 
-    // ──────────────────────────── playlist window（滑动队列）────────────────────────
-    // playlistWindow = 固定11格队列，索引5为当前播放。
-    // 上滑 shiftWindow(+1)：左移，前排出队，末尾补随机（不重复）
-    // 下滑 shiftWindow(-1)：右移，后排出队，开头补随机（不重复）
-    // setPlaylistWindow(idx)：重建窗口使 videos[idx] 在中间（用于 applyIndex 跳转）
-    // 随机池用完则重新 Fisher-Yates 洗牌补充。
+    // ──────────────────────────── playlist window（11格播放信息队列）────────────────────────
+    // playlistWindow = 固定11格 (uuid, t) 队列。
+    // 索引5 = 当前播放；0-4 = 前5；6-10 = 后5。
+    // 上滑 shiftWindow(+1)：i 位置从 i+1 接收 (uuid, t)，索引10补随机
+    // 下滑 shiftWindow(-1)：i 位置从 i-1 接收 (uuid, t)，索引0补随机
+    // 随机补位：从 videos 随机选一个 uuid + 随机进度 t（0..duration）
+    // 进度 t 的含义：该位置视频当时播放到的时间点；切换后会 seek 到该 t
 
-    let _fillPool = [];  // 当前随机候选池
+    let _fillPool = [];  // 当前随机候选池（videos 数组）
+
+    // 随机生成一个 (uuid, t) —— uuid 随机，t 在 duration 范围内随机
+    function _makeRandomEntry() {
+        if (videos.length === 0) return null;
+        if (_fillPool.length === 0) {
+            _fillPool = videos.slice();
+            _shufflePool(_fillPool);
+        }
+        const v = _fillPool.pop();
+        // 视频时长可能是 NaN/未知；保守取 [0, max(0, duration-0.5)]；未知时取 [0, 60)
+        const dur = (v && Number.isFinite(v.duration)) ? v.duration : 60;
+        const t = Math.max(0, Math.random() * Math.max(1, dur - 0.5));
+        return { uuid: v ? v.name : null, t };
+    }
+
+    // 取一个随机 uuid 的视频对象（不消耗 _fillPool）
+    function _randomVideo() {
+        if (videos.length === 0) return null;
+        return videos[Math.floor(Math.random() * videos.length)];
+    }
 
     function _shufflePool(pool) {
         for (let i = pool.length - 1; i > 0; i--) {
@@ -80,12 +103,8 @@
     }
 
     function _makeFillPool() {
-        // 候选池：不在当前窗口内（且不是当前播放）的 videos
-        const used = new Set(playlistWindow.filter(v => v).map(v => v.name));
-        // 只排除当前播放（positions 中刚记录的），不排除所有已记录过的
-        const currentVideo = videos[activeIndex];
-        if (currentVideo) used.add(currentVideo.name);
-        _fillPool = videos.filter(v => !used.has(v.name));
+        // 候选池：videos 全集；_makeRandomEntry 自己从池中 pop（耗尽自动重新洗）
+        _fillPool = videos.slice();
         _shufflePool(_fillPool);
     }
 
@@ -94,59 +113,57 @@
         return _fillPool.pop() || null;
     }
 
-    // 初始化队列：前5空，当前 videos[0]，后5 = videos[1..5] 或随机
+    // 初始化队列：11 格 (uuid, t)；5 个前位、5 个后位都从 videos 随机选 + 随机 t；当前 = videos[activeIndex]，t = positions 缓存或 0
     function initPlaylistWindow() {
         if (videos.length === 0) { playlistWindow = []; _fillPool = []; syncAppState(); return; }
-        playlistWindow = [];
-        for (let i = 0; i < 5; i++) playlistWindow.push(null);  // 前5空
-        playlistWindow.push(videos[0]);  // 当前
-        for (let i = 1; i <= 5; i++) {  // 后5
-            playlistWindow.push(videos[i] || null);
-        }
-        // 补满空位
-        _makeFillPool();
-        for (let i = 0; i < WINDOW_SIZE; i++) {
-            if (!playlistWindow[i]) playlistWindow[i] = _nextFill();
-        }
+        const w = new Array(WINDOW_SIZE);
+        // 前5格 (uuid, t) 随机
+        for (let i = 0; i < 5; i++) w[i] = _makeRandomEntry();
+        // 当前：videos[activeIndex] + 缓存或 0
+        const cur = videos[activeIndex];
+        w[5] = { uuid: cur ? cur.name : null, t: (cur && positions.get(cur.name)) || 0 };
+        // 后5格 (uuid, t) 随机
+        for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
+        playlistWindow = w;
         syncAppState();
     }
 
-    // 上滑(+1)/下滑(-1)移动队列，末尾/开头补随机
+    // 上滑(+1)/下滑(-1)移动队列
+    // 上滑：位置 i 从位置 i+1 接收 (uuid, t)，索引10补随机
+    // 下滑：位置 i 从位置 i-1 接收 (uuid, t)，索引0补随机
     function shiftWindow(delta) {
-        if (!delta || videos.length === 0) return;
+        if (!delta || videos.length === 0 || playlistWindow.length !== WINDOW_SIZE) return;
         if (delta > 0) {
-            playlistWindow.shift();  // 左移：移除前5格中最老的
-            playlistWindow.push(_nextFill());  // 末尾补随机
+            // 上滑：左移。位置 i = 位置 i+1；末尾(10)补随机
+            const next = new Array(WINDOW_SIZE);
+            for (let i = 0; i < WINDOW_SIZE - 1; i++) next[i] = playlistWindow[i + 1];
+            next[WINDOW_SIZE - 1] = _makeRandomEntry();
+            playlistWindow = next;
         } else {
-            delta = -delta;
-            playlistWindow.pop();  // 右移：移除末尾
-            playlistWindow.unshift(_nextFill());  // 开头补随机
+            // 下滑：右移。位置 i = 位置 i-1；开头(0)补随机
+            const next = new Array(WINDOW_SIZE);
+            for (let i = 1; i < WINDOW_SIZE; i++) next[i] = playlistWindow[i - 1];
+            next[0] = _makeRandomEntry();
+            playlistWindow = next;
+        }
+        // 同步 activeIndex 到 playlistWindow[5].uuid 在 videos 数组中的索引
+        const curUuid = playlistWindow[5] && playlistWindow[5].uuid;
+        if (curUuid) {
+            const idx = videos.findIndex(v => v.name === curUuid);
+            if (idx >= 0) activeIndex = idx;
         }
         syncAppState();
     }
 
-    // 重建窗口使 videos[targetIdx] 在队列中间（索引5）
+    // 重建窗口使 videos[targetIdx] 在队列中间（索引5），其余随机；用于 applyIndex 跳转
     function setPlaylistWindow(targetIdx) {
         if (videos.length === 0) { playlistWindow = []; _fillPool = []; syncAppState(); return; }
         targetIdx = Math.max(0, Math.min(videos.length - 1, targetIdx));
-        const w = [];
-        // 前5格
-        for (let i = 5; i >= 1; i--) {
-            const idx = targetIdx - i;
-            w.push(idx >= 0 ? videos[idx] : null);
-        }
-        // 当前
-        w.push(videos[targetIdx]);
-        // 后5格
-        for (let i = 1; i <= 5; i++) {
-            const idx = targetIdx + i;
-            w.push(idx < videos.length ? videos[idx] : null);
-        }
-        // 补满空位
-        _makeFillPool();
-        for (let i = 0; i < WINDOW_SIZE; i++) {
-            if (!w[i]) w[i] = _nextFill();
-        }
+        const w = new Array(WINDOW_SIZE);
+        for (let i = 0; i < 5; i++) w[i] = _makeRandomEntry();
+        const cur = videos[targetIdx];
+        w[5] = { uuid: cur ? cur.name : null, t: (cur && positions.get(cur.name)) || 0 };
+        for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
         playlistWindow = w;
         activeIndex = targetIdx;
         syncAppState();
@@ -154,7 +171,7 @@
 
     function syncAppState() {
         window._appState = {
-            window: playlistWindow.map(v => v ? v.name : null),
+            window: playlistWindow.map(v => v ? { uuid: v.uuid, t: v.t } : null),
             windowSize: playlistWindow.length,
         };
         window._allVideoNames = videos.map(v => v.name);
@@ -349,26 +366,24 @@
             return;
         }
 
-        initPlaylistWindow();  // 等价于 setPlaylistWindow(activeIndex)，保持初始化入口
-        // shuffle 后 playlistWindow[5] 不一定等于 videos[activeIndex]（因为 shuffle）
-        // 所以 shuffle 后必须显式加载 videos[activeIndex]
-        loadVideoForIndex(activeIndex);
+        initPlaylistWindow();  // 11 格 (uuid, t) 随机填充 + 当前 = videos[activeIndex]
+        loadVideoForIndex(5);  // 中间格
 
         feeds.forEach(feed => {
             for (let c = 0; c < FEED_COPIES; c++) {
-                playlistWindow.forEach((v) => {
+                playlistWindow.forEach((entry) => {
                     const item = document.createElement('div');
                     item.className = 'video-item';
-                    item._vid = v ? v.name : null;  // video name for lookup
+                    item._vid = entry ? entry.uuid : null;  // video name for lookup
                     feed.appendChild(item);
                 });
             }
         });
 
         activeIndex = Math.max(0, Math.min(activeIndex, Math.max(0, videos.length - 1)));
-        feeds.forEach(f => scrollToIndex(f, activeIndex));
+        feeds.forEach(f => scrollToIndex(f, 5));
         buildPageDots();
-        loadVideoForIndex(activeIndex);
+        loadVideoForIndex(5);
         updateInfo();
         feedReady = true;  // 初始化完成，启用 scroll handler
     }
@@ -402,15 +417,13 @@
         });
     });
 
-    function applyIndex(idx) {
-        if (videos.length === 0) return;
-        const targetIdx = Math.max(0, Math.min(videos.length - 1, idx));
-        if (targetIdx === activeIndex) return;
+    function applyIndex(delta) {
+        // delta: +1 上滑一步（队列左移）；-1 下滑一步（队列右移）
+        if (!delta || videos.length === 0) return;
         recordActivePosition();
-        activeIndex = targetIdx;
-        setPlaylistWindow(targetIdx);
+        shiftWindow(delta);
         playing = autoplay;
-        loadVideoForIndex(targetIdx);
+        loadVideoForIndex(5);  // playlistWindow 中间格
         updateInfo();
         updatePlayback();
     }
@@ -418,18 +431,20 @@
     // ---------------------------------------------------------------- single video player
     function loadVideoForIndex(idx) {
         if (videos.length === 0) return;
-        // 当前视频固定来自 playlistWindow 中间格（索引5）
-        const v = playlistWindow[5];
+        // 当前视频来自 playlistWindow 中间格（索引5）的 (uuid, t)
+        const entry = playlistWindow[5];
+        if (!entry || !entry.uuid) return;
+        const v = videos.find(x => x.name === entry.uuid) || videos[idx];
         if (!v) return;
 
         destroyHls();
 
-        // Restore saved position
-        const savedPos = positions.get(v.name);
-        if (savedPos !== undefined) {
-            video._pendingSeek = savedPos;
-            positions.delete(v.name);
+        // Restore position: 优先取 playlistWindow 中的 t；其次 positions 缓存
+        const seekT = entry.t || positions.get(v.name);
+        if (seekT !== undefined && seekT > 0) {
+            video._pendingSeek = seekT;
         }
+        if (positions.has(v.name)) positions.delete(v.name);
 
         if (v.hls && v.hlsReady && hlsCapable(v)) {
             video.src = '';
@@ -662,7 +677,7 @@
         const feed = feeds[1];
         cancelVertAnim();
         let from = feed.scrollTop;
-        if (Math.abs(from - top) < 1) { if (delta) applyIndex(activeIndex + delta); return; }
+        if (Math.abs(from - top) < 1) { if (delta) applyIndex(delta); return; }
         feed.scrollTop = from + (top - from) * 0.02;
         from = feed.scrollTop;
         const dur = 380;
@@ -680,21 +695,19 @@
                 vertAnim = null;
                 feed._progScrollUntil = Date.now() + 120;
                 feed.scrollTop = MIDDLE_CURRENT_TOP * feed.clientHeight;
-                if (d) applyIndex(activeIndex + d);
+                if (d) applyIndex(d);
             }
         };
         vertAnim.raf = requestAnimationFrame(step);
     }
 
-    // wheel：上下翻页（deltaY>0 上滑→下视频，deltaY<0 下滑→上视频）
+    // wheel：上下翻页（deltaY>0 上滑→下一视频，deltaY<0 下滑→上一视频）
     feeds[1].addEventListener('wheel', (e) => {
         if (playlistWindow.length === 0) return;
         e.preventDefault();
         if (vertAnim) return;
         const dir = e.deltaY > 0 ? 1 : -1;
-        // 边界检查：activeIndex ± dir 不越界
-        if (activeIndex + dir < 0 || activeIndex + dir >= videos.length) return;
-        applyIndex(activeIndex + dir);
+        applyIndex(dir);
     }, { passive: false });
 
     // Treat tap on a side-panel page as "go back to main"
@@ -717,17 +730,38 @@
             return;
         }
 
-        // Tap on video item
+        // Tap on video item —— 把点击位置映射到 playlistWindow 索引，再决定上下滑几步
         const item = target.closest('.video-item');
         if (!item) return;
         const domIdx = Array.prototype.indexOf.call(item.parentNode.children, item);
-        const n = videos.length;
-        const idx = n ? domIdx % n : domIdx;
-        if (idx === activeIndex) { playing = !playing; updatePlayback(); }
-        else { applyIndex(idx); }
+        const wn = playlistWindow.length;  // 11
+        if (wn === 0) return;
+        const winIdx = domIdx % wn;        // 0..10
+        const center = 5;
+        const delta = winIdx - center;     // +1..+5 上滑；-1..-5 下滑
+        if (delta === 0) { playing = !playing; updatePlayback(); }
+        else { applyIndex(delta); }
     }
 
     // ---- Touch ----
+    // 长按视频=5倍速；长按空白=settings/feed 空白处=上传。区分方法：起点是否在 videoContainer 内
+    function isOnVideo(clientX, clientY) {
+        if (currentPage !== 1) return false;
+        const el = document.elementFromPoint(clientX, clientY);
+        return !!(el && el.closest && el.closest('#videoContainer'));
+    }
+    let fastSpeed = false;  // 长按 5 倍速期间为 true
+    function beginFastSpeed() {
+        if (fastSpeed) return;
+        fastSpeed = true;
+        video.playbackRate = 5;
+    }
+    function endFastSpeed() {
+        if (!fastSpeed) return;
+        fastSpeed = false;
+        video.playbackRate = playbackSpeed;
+    }
+
     viewport.addEventListener('touchstart', (e) => {
         const t = e.touches[0];
         swipeStartX = t.clientX; swipeStartY = t.clientY;
@@ -738,10 +772,14 @@
         vertBaseTop = feeds[1].scrollTop;
         cancelVertAnim();
         longPressMoved = false;
+        const onVideo = isOnVideo(t.clientX, t.clientY);
         longPressTimer = setTimeout(() => {
             longPressTimer = null;
             longPressMoved = true;
-            if (currentPage === 1) {
+            if (onVideo) {
+                // 长按视频 → 5 倍速
+                beginFastSpeed();
+            } else if (currentPage === 1) {
                 uploadModal.classList.remove('hidden');
                 progressArea.classList.add('hidden');
             }
@@ -779,6 +817,7 @@
 
     viewport.addEventListener('touchend', (e) => {
         if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        endFastSpeed();  // 松手恢复 1x 倍速（或用户设置的 playbackSpeed）
         const t = e.changedTouches[0];
         edgeHintLeft.style.opacity = '0'; edgeHintRight.style.opacity = '0';
         const dy = t.clientY - vertStartY;
@@ -788,6 +827,11 @@
         }
         const handled = finishSwipe(t.clientX, t.clientY);
         if (!handled && !verticalMoved) handleTap(e);
+    }, { passive: true });
+
+    viewport.addEventListener('touchcancel', () => {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+        endFastSpeed();
     }, { passive: true });
 
     // ---- Mouse ----

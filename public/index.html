@@ -39,7 +39,10 @@
                 <div class="panel-mask"></div>
                 <div class="feed" id="feed2"></div>
                 <aside class="side-panel settings-panel" id="settingsPanel">
-                    <div class="panel-head">设置</div>
+                    <div class="panel-head">
+                        <span>设置</span>
+                        <button class="fab-upload" id="fabUpload" aria-label="上传视频">⬆ 上传</button>
+                    </div>
                     <div class="panel-body">
                         <div class="setting-row"><span>视频数量</span><b id="videoCount">0</b></div>
                         <div class="setting-row"><span>随机播放</span><label class="switch"><input type="checkbox" id="randomSwitch" checked><i></i></label></div>
@@ -82,9 +85,6 @@
         <!-- Edge hint indicators -->
         <div class="edge-hint edge-hint-left" id="edgeHintLeft"></div>
         <div class="edge-hint edge-hint-right" id="edgeHintRight"></div>
-
-        <!-- Floating upload button (right edge) -->
-        <button class="fab-upload" id="fabUpload" aria-label="上传视频">⬆</button>
     </div>
 
     <!-- Upload modal -->
