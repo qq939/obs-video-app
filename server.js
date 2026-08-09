@@ -213,6 +213,8 @@ function detectCodecs(filePath) {
     return new Promise((resolve, reject) => {
         const child = spawn('ffprobe', [
             '-v', 'error',
+            '-analyzeduration', '1000000',  // 1s — much faster on slow storage
+            '-probesize', '1000000',
             '-show_entries', 'stream=codec_type,codec_name',
             '-of', 'json',
             filePath
@@ -815,9 +817,41 @@ const server = http.createServer(async (req, res) => {
         // No manual HLS endpoints: HLS generation is fully automatic.
         //   - upload complete / simple upload -> generateHls()
         //   - compress (non-skipped)          -> invalidateHls() + generateHls()
-        //   - startup sweep                   -> generate every asset lacking
-        //                                        current-version HLS
+        //   - POST /hls/generate-all          -> manual batch trigger (recommended for first-time setup)
         //   - GET /hls/:name/index.m3u8       -> lazy generation on first hit
+
+        // POST /hls/generate-all: sequential batch generation (one at a time, no concurrency).
+        const genAll = (method === 'POST') && (p === '/hls/generate-all');
+        if (genAll) {
+            const pending = [];
+            for (const it of listVideoFiles()) {
+                if (!hlsExists(it.name)) pending.push(it.name);
+            }
+            if (pending.length === 0) {
+                logLine(`/hls/generate-all: nothing to do (all ${listVideoFiles().length} videos have HLS`);
+                return sendJson(res, 200, { total: listVideoFiles().length, pending: 0, queue: [] });
+            }
+            logLine(`/hls/generate-all: ${pending.length} videos to generate (sequential)`);
+            const done = [], failed = [];
+            async function runNext(i) {
+                if (i >= pending.length) {
+                    logLine(`/hls/generate-all: DONE. ${done.length} ok, ${failed.length} failed`);
+                    return;
+                }
+                const name = pending[i];
+                try {
+                    await withTimeout(generateHls(name), HLS_TIMEOUT_MS);
+                    logLine(`/hls/generate-all [${i+1}/${pending.length}] ${name}: ok`);
+                    done.push(name);
+                } catch (e) {
+                    logLine(`/hls/generate-all [${i+1}/${pending.length}] ${name}: FAILED: ${e.message}`);
+                    failed.push(name);
+                }
+                await runNext(i + 1);  // sequential
+            }
+            runNext(0);  // fire-and-forget
+            return sendJson(res, 200, { total: listVideoFiles().length, pending: pending.length, queue: pending });
+        }
 
         // ---- static frontend from public/
         if (method === 'GET' || method === 'HEAD') {
@@ -867,13 +901,16 @@ server.listen(PORT, '0.0.0.0', () => {
 // without a current-version HLS (new upload, generation version bump, source
 // changed, or HLS dir deleted) is queued for background generation — no manual
 // "转HLS" button anywhere.
-setImmediate(() => {
-    for (const it of listVideoFiles()) {
-        if (!hlsExists(it.name)) {
-            generateHls(it.name).catch((e) => logLine('hls startup gen failed:', e.message));
-        }
-    }
-});
+//
+// STARTUP SWEEP DISABLED — 5 concurrent ffmpeg overwhelms slow storage (e.g. network mounts).
+// Use POST /hls/generate-all to trigger manually, or rely on lazy generation on GET /hls/:name/index.m3u8.
+// setImmediate(() => {
+//     for (const it of listVideoFiles()) {
+//         if (!hlsExists(it.name)) {
+//             generateHls(it.name).catch((e) => logLine('hls startup gen failed:', e.message));
+//         }
+//     }
+// });
 
 // Daily cron at UTC+8 05:00: re-scan obs/ and generate HLS for any video that
 // doesn't have a current-version HLS. Implemented in-process because the
