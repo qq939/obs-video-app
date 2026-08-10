@@ -510,8 +510,10 @@
                     '<span class="pl-pos">' + posLabel + '</span>' +
                     '<span class="pl-status ' + statusClass + '">' + escapeHtml(statusText) + '</span>' +
                 '</div>' +
-                '<div class="pl-name">' + escapeHtml(nameStr) + '</div>' +
-                '<div class="pl-time">' + escapeHtml(timeText) + '</div>' +
+                '<div class="pl-row">' +
+                    '<span class="pl-name">' + escapeHtml(nameStr) + '</span>' +
+                    '<span class="pl-time">' + escapeHtml(timeText) + '</span>' +
+                '</div>' +
                 '<div class="pl-bar"><div class="pl-bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div>';
 
             item.addEventListener('click', () => {
@@ -589,9 +591,9 @@
         if (!active) return;
         const stripRect = playlistStrip.getBoundingClientRect();
         const itemRect = active.getBoundingClientRect();
-        // 把 .active 滚到 strip 水平中间
-        const offset = (itemRect.left - stripRect.left) - (stripRect.width / 2 - itemRect.width / 2);
-        playlistStrip.scrollBy({ left: offset, behavior: 'smooth' });
+        // 把 .active 滚到 strip 竖直中间（竖向布局后中央格是 playlistWindow[5]）
+        const offset = (itemRect.top - stripRect.top) - (stripRect.height / 2 - itemRect.height / 2);
+        playlistStrip.scrollBy({ top: offset, behavior: 'smooth' });
     }
 
     // 切源时给视频加 .video-fading 让透明度 0 + 微下移，
