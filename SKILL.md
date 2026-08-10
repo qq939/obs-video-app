@@ -17,7 +17,7 @@ description: 开发、测试、发现 bug、变更维护容器内 Web App 8082�
 
 - **端口**：固定 `8082`，`server.js` 必须监听 `0.0.0.0`
 - **项目目录**：`/home/agent/.claude/workspace/project`
-- **当前 HEAD**：`main` → `1e67fb6`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 50 MiB + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 前 5/当前/后 5 播放窗口 + 空缺随机填充，详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
+- **当前 HEAD**：`main` → `c2fd1e0`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + **4 MiB 段** + `maxBufferLength: 120` + `POST /hls/generate-all` 端点 + 启动脚本固化 HLS 生成 + 三页水平 + 抖音式纵向翻页 + 翻页阈值视口自适应 + **11 格 (uuid, t) 播放队列 + 实时 t 同步** + **长按视频 5x 加速** + **第 1 页 5x 倒放 + 第 2/3 页共享 8 档播放速度 (0.5/0.8/1/1.5/2/3/5/7)**；详情见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」）
 - **运行环境**：Node.js v20+（原生 `http`，无外部依赖）；claude CLI 位于 `/usr/local/bin/claude`；ffmpeg 5.1 位于 `/usr/bin/ffmpeg`
 - **平台惯例**：全部在 `systemreadme.md`
 

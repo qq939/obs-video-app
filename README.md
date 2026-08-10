@@ -2,11 +2,11 @@
 
 监听 **8082** 端口的视频上传 / 播放服务，前端为**抖音式竖屏翻页视频流**（手跟踪 + 吸附动画）
 + **三页水平滑动架构**（CSS translateX）：信息页 / 中间 feed / 设置页。
-**纯手势操作**，没有任何按钮。后端为 Node.js 内置 `http` 模块实现，
+**纯手势操作**（设置页 panel-head 内嵌唯一的红色"上传"按钮）。后端为 Node.js 内置 `http` 模块实现，
 无任何第三方依赖。同时保留平台要求的 `/ask/claude` 问答接口。
 
 项目根目录：`/home/agent/.claude/workspace/project`
-当前 git HEAD：`main` → `1e67fb6`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + 按字节切段 + UTC+8 05:00 cron + mov/mkv 重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 前5/当前/后5 播放窗口 + 空缺随机填充，详情见 `logs/agent_tui.summary.md`）
+当前 git HEAD：`main` → `c2fd1e0`（OBS + Claude Ask + HLS 全自动 + 旋转修复 + **4 MiB 段** + `POST /hls/generate-all` 端点 + 启动脚本固化 HLS 生成 + 三页水平 + 抖音式纵向翻页 + 翻页阈值视口自适应 + **11 格 (uuid, t) 播放队列 + 实时 t 同步** + **长按视频 5x 加速** + **第 1 页 5x 倒放 + 第 2/3 页共享 8 档播放速度 (0.5/0.8/1/1.5/2/3/5/7)**；详情见 `logs/agent_tui.summary.md`）
 
 ---
 
@@ -15,15 +15,16 @@
 - 🎬 **抖音式竖屏翻页视频流**：手跟踪 + `easeOutCubic` 吸附动画 + wheel 翻页，原生滚动完全由 JS 接管（`overflow-y: hidden; touch-action: none`），无 scroll-snap
 - 🔁 **三页水平架构**：`<div id="pages">` 横向 300% 宽，CSS `translateX(calc(-1 * var(--page) * (100% / 3)))` + `transition: transform .35s` 切页（0=信息 / 1=中间 feed / 2=设置）
 - 🎯 **翻页阈值视口自适应**：`SWIPE_THRESHOLD = Math.max(240, round(innerWidth * 0.35))`（视口 1280 时 ≈ 448），加方向锁定（`AXIS_LOCK_DIST=18`）+ 速度豁免（`VELOCITY_THRESHOLD=0.5 px/ms`），左右滑动不再误翻页
-- 🪟 **前 5 / 当前 / 后 5 播放窗口**：`WINDOW_SIZE=11`，`playlistWindow` 数组；前后各 5 格从 videos 实际位置取，超出部分 Fisher–Yates 随机填充（池耗尽重新洗），`scrollToIndex` 固定到中间副本
+- 🪟 **前 5 / 当前 / 后 5 播放队列**：`WINDOW_SIZE=11`，`playlistWindow` 数组每个元素为 `{uuid, t}`（uuid = 视频名，t = 该视频目标播放进度）；前 5 / 后 5 从 videos 随机选 + 随机 t，当前 = 活动视频 + 真实进度；上滑 (delta=+1) 位置 i ← 位置 i+1，索引 10 补随机；下滑反向，索引 0 补随机；**中间格 t 每 500ms 实时同步 `video.currentTime`**，切换时旧 t 自然随位移带走
 - 🔀 **随机播放**：`GET /videos` 每次返回随机顺序（Fisher–Yates），前端随机开关可重排
-- 📐 **左右侧栏**：左滑打开信息面板（文件名/大小/时间/进度/索引），右滑打开设置面板（视频数量/随机开关/自动播放开关/播放速度）
-- 👆 **纯手势操作**：无任何按钮 — 长按空白处打开上传弹窗，左右滑切换面板，点击/双击/拖动控制视频
+- 📐 **左右侧栏**：左滑打开信息面板（文件名/大小/时间/进度/索引），右滑打开设置面板（视频数量/随机开关/自动播放开关/8 档播放速度）
+- 👆 **纯手势 + 设置页内嵌上传按钮**：长按空白处打开上传弹窗，左右滑切换面板，点击/双击/拖动控制视频，**长按视频 = 5x 加速**（松手恢复 1x），设置页右上角红色 "⬆ 上传" 按钮
 - ⬆️ **分片上传**：`init → chunk → complete`，支持**断点续传**（按文件 sha256 匹配未完成会话），弹窗内点击或拖拽文件即可
 - 🗜️ **视频压缩**：上传弹窗默认「压缩后上传」——浏览器端用 `captureStream()`+`MediaRecorder` 先把视频转码为 VP9/Opus webm（体积更小再传，省流量），原文件过大/不支持时自动回退直传
 - 📡 **HTTP Range 流式播放**：支持 `206 Partial Content`，浏览器可拖拽进度条
-- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / 服务启动 / **每日 UTC+8 05:00 cron** 对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，**`.mov` / `.mkv` 一律重编码**（QuickTime moov 位置 + codec tag 兼容性问题，避免 hls.js/MSE 播放卡顿），hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）；**段大小按字节切**，每段约 50 MiB（`-hls_segment_size 52428800`，GOP 对齐）
-- 🎚️ **播放速度选择**：设置面板 0.5x / 1x / 1.5x / 2x / 3x（默认 1.5x）
+- 📡 **HLS 流式播放**：服务端 ffmpeg 生成 m3u8 + ts 分片（存于独立 `hls/` 文件夹，不污染 `obs/`），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放；**全自动**：上传 / 压缩 / **`POST /hls/generate-all`**（`user_start.sh` 启动脚本调用）对所有资产后台生成（无任何「转HLS」按钮），带旋转元数据的视频自动重编码扶正，**`.mov` / `.mkv` 一律重编码**（QuickTime moov 位置 + codec tag 兼容性问题，避免 hls.js/MSE 播放卡顿），hls.js 缺失/致命错误时自动回退直连 mp4/webm（OBS 上传 / 下载 / 列表接口全部保留）；**段大小按字节切，每段约 4 MiB**（`-hls_segment_size 4194304`，GOP 对齐，与 B 站/YouTube 同水平），hls.js `maxBufferLength: 120` 秒（≈ 30 段 ≈ 120 MB 缓冲）
+- 🎚️ **播放速度选择**：设置面板 0.5x / 0.8x / 1x / 1.5x / 2x / 3x / 5x / 7x（**默认 1x**），第 1 页（main feed）和第 2 页（设置页）共享同一速度
+- ⏪ **第 1 页（信息页）5x 倒放**：`currentTime -= 0.5` 每 100ms（到 0 自动 pause），用于快速回看
 - ⏭️ **秒传跳过**：同一文件（相同 hash + size）再次上传直接返回已有地址
 - 🔒 **路径安全**：文件名清洗，拒绝 `..` / 目录穿越
 - 🔇 **永不静音**：暂停即无声，播放即有声（不再 `muted=true`），避免桌面鼠标拖拽滑动不触发 click 而无声
@@ -110,7 +111,12 @@ project/
     └── commit.txt         # git commit 记录
 ```
 
-> **关于 HLS 与本轮变更**：容器内 `logs/agent_tui.log` 记录了从 2026-08-01 起的所有会话；最近 3 轮 = HLS 按字节切段 50 MiB + 24:00 cron → cron 改 UTC+8 05:00 → 无感播放 + 50% 侧栏 + 按需缓存（commit `21f9a93` / `a106c32` / `8d25e1b` / `1dcecfd`）。后续从 origin 拉来了 `bcdfb65` / `ceb68b4` / `996ebbc` 三个 commit（单播放器 / 手势优化 / 纯手势操作），当前 HEAD `996ebbc` 已包含全部。完整方案、调试 insight、经验教训见 `logs/agent_tui.summary.md`「最后 3 轮对话总结」。
+> **关于 HLS 与本轮变更**：容器内 `logs/agent_tui.log` 记录了从 2026-08-01 起的所有会话；当前 HEAD `c2fd1e0`。最近 3 轮（08-09 ~ 08-10）：
+> 1. **HLS 段大小 + 缓冲优化**：`HLS_SEGMENT_BYTES` 50 MiB → 4 MiB；hls.js `maxBufferLength` 30 → 120（commit `07a2446`）
+> 2. **ffprobe ENOENT 修复**：`apt-get install ffmpeg`（ffprobe 5.1.9），重转所有缺失 HLS（2436/2435/2431/2433/2345）
+> 3. **origin rebase + 启动脚本改造**：rebase origin 新增 `edd6bc9` / `61431e8` / `fe0c691` / `c2fd1e0`；`user_start.sh` 修正（真正启动 node + 触发 `POST /hls/generate-all`）
+>
+> 完整方案、调试 insight、经验教训见 `logs/agent_tui.summary.md`「最后 3 轮对话总结」。
 
 ---
 
@@ -318,6 +324,6 @@ git log --format="%h %s" -1 >> logs/commit.txt
 
 - `/ask/claude` 在**当前主会话正在运行**时，二次 claude CLI 会因会话占用而等待；
   该端点设计用于宿主控制面板在主会话空闲时调用。
-- 当前 HEAD `1e67fb6` 已实现：HLS 全自动 + 旋转 90° 修复 + 按字节切段（50 MiB/段）+ UTC+8 05:00 cron + mov/mkv 一律重编码 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 前 5/当前/后 5 播放窗口 + 空缺随机填充。完整方案、调试细节、经验教训
+- 当前 HEAD `c2fd1e0` 已实现：HLS 全自动 + 旋转 90° 修复 + 段大小 4 MiB + hls.js bufferLength 120s + `POST /hls/generate-all` 端点 + 启动脚本固化 HLS 生成 + 单播放器 + 左右滑动面板 + 纯手势操作 + 无感自动播放 + 侧栏 50% + 按需缓存 + 抖音式纵向翻页 + 翻页阈值视口自适应 + 方向/速度锁定 + 11 格 (uuid, t) 播放队列 + 实时 t 同步 + 长按视频 5x + 第 1 页 5x 倒放 + 第 2/3 页共享 8 档播放速度。完整方案、调试细节、经验教训
   参见 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
 - 更多容器部署细节参见 `hermit-container-debugging-guide.md`。
