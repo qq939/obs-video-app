@@ -451,8 +451,20 @@
         shiftWindow(delta);
         playing = autoplay;
         loadVideoForIndex(5);  // playlistWindow 中间格
+        _videoFadeIn();          // 新视频渐入动画（与纵向滚动吸附同步播放）
         updateInfo();
         updatePlayback();
+    }
+
+    // 切源时给视频加 .video-fading 让透明度 0 + 微下移，
+    // 一帧后移除 → CSS transition 把视频带回原位（"跟手"渐入）
+    function _videoFadeIn() {
+        videoContainer.classList.add('video-fading');
+        // 双 rAF 确保先渲染一帧初始态（opacity:0）再切到目标态（opacity:1），
+        // 浏览器才能触发 CSS transition
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+            videoContainer.classList.remove('video-fading');
+        }));
     }
 
     // ---------------------------------------------------------------- single video player
@@ -724,7 +736,7 @@
         if (Math.abs(from - top) < 1) { if (delta) applyIndex(delta); return; }
         feed.scrollTop = from + (top - from) * 0.02;
         from = feed.scrollTop;
-        const dur = 380;
+        const dur = 320;   // 320ms + easeOutCubic：起步快收尾缓，跟手感强；太快像跳，太慢像拖泥带水
         feed._progScrollUntil = Date.now() + dur + 120;
         vertAnim = { from, to: top, delta, start: performance.now(), dur, raf: 0 };
         const step = (now) => {
@@ -739,6 +751,7 @@
                 vertAnim = null;
                 feed._progScrollUntil = Date.now() + 120;
                 feed.scrollTop = MIDDLE_CURRENT_TOP * feed.clientHeight;
+                vertBaseTop = feed.scrollTop;   // 吸附结束后刷新基线，键盘/滚轮可以继续累加
                 if (d) applyIndex(d);
             }
         };
@@ -746,12 +759,14 @@
     }
 
     // wheel：上下翻页（deltaY>0 上滑→下一视频，deltaY<0 下滑→上一视频）
+    // 走 vertAnimateTo 与 touch/keyboard 同一条吸附动画路径，保证视觉一致
     feeds[1].addEventListener('wheel', (e) => {
         if (playlistWindow.length === 0) return;
         e.preventDefault();
         if (vertAnim) return;
         const dir = e.deltaY > 0 ? 1 : -1;
-        applyIndex(dir);
+        const h = Math.max(1, feeds[1].clientHeight);
+        vertAnimateTo(vertBaseTop - dir * h, dir);
     }, { passive: false });
 
     // Treat tap on a side-panel page as "go back to main"

@@ -35,6 +35,15 @@ html, body {
     height: 100%;
     object-fit: contain;
     background: #000;
+    /* 切源/上下翻页时的"跟手"渐入动画：opacity + 微 translateY
+       由 app.js 的 _videoFadeIn() 切源后立刻触发，CSS 只负责 transition */
+    transition: opacity .28s ease-out, transform .28s ease-out;
+    will-change: opacity, transform;
+}
+/* 切源瞬间初始态：透明度 0 + 微下移 12px；JS rAF 后移除该 class，恢复默认 */
+.video-container.video-fading video {
+    opacity: 0;
+    transform: translateY(12px) scale(.985);
 }
 
 .video-container .v-label {
@@ -100,7 +109,9 @@ html, body {
     /* 页面内容整体在视频层(playerLayer z-index:5)之上，确保边栏/页点/边缘提示可见 */
     z-index: 6;
     transform: translateX(calc(-1 * var(--page, 1) * (100% / 3)));
-    transition: transform .35s cubic-bezier(.4, 0, .2, 1);
+    /* cubic-bezier(.32,.72,0,1) = "expo-out" 风格：起步快、收尾缓，
+       给三页切换一种"跟手"的弹性观感 */
+    transition: transform .42s cubic-bezier(.32, .72, 0, 1);
     will-change: transform;
 }
 
