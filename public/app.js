@@ -927,6 +927,40 @@
         document.addEventListener(ev, function first() { updatePlayback(); }, { once: true, passive: true });
     });
 
+    // ---- Keyboard navigation ----
+    // ArrowDown/ArrowUp: 第 1 页上下切换视频（同 wheel 行为，带平滑吸附动画）
+    // ArrowLeft /ArrowRight: 三页之间切换（信息页 0 / 主 feed 1 / 设置页 2，带 CSS transition 跟手）
+    document.addEventListener('keydown', (e) => {
+        // 输入控件里忽略（避免与表单交互冲突）
+        const t = e.target;
+        if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+        if (e.altKey || e.ctrlKey || e.metaKey) return;
+
+        switch (e.key) {
+            case 'ArrowDown':
+                if (currentPage !== 1 || vertAnim) return;
+                e.preventDefault();
+                vertAnimateTo(vertBaseTop + feeds[1].clientHeight, 1);
+                break;
+            case 'ArrowUp':
+                if (currentPage !== 1 || vertAnim) return;
+                e.preventDefault();
+                vertAnimateTo(vertBaseTop - feeds[1].clientHeight, -1);
+                break;
+            case 'ArrowLeft':
+                if (currentPage <= 0) return;
+                e.preventDefault();
+                // 右滑翻到上一页：与右滑手势一致，靠 CSS transition + setProperty('--page')
+                setPage(currentPage - 1);
+                break;
+            case 'ArrowRight':
+                if (currentPage >= PAGE_COUNT - 1) return;
+                e.preventDefault();
+                setPage(currentPage + 1);
+                break;
+        }
+    });
+
     // Video metadata: restore pending seek
     video.addEventListener('loadedmetadata', () => {
         if (video._pendingSeek !== undefined && isFinite(video._pendingSeek) &&
