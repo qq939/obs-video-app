@@ -164,30 +164,38 @@
         syncAppState();
     }
 
-    // 上滑(+1)/下滑(-1)移动队列
-    // 上滑：位置 i 从位置 i+1 接收 (uuid, t)，索引10补随机
-    // 下滑：位置 i 从位置 i-1 接收 (uuid, t)，索引0补随机
-    function shiftWindow(delta) {
-        if (!delta || videos.length === 0 || playlistWindow.length !== WINDOW_SIZE) return;
+    // 上滑(+1)/下滑(-1)切换到下一个/上一个视频，同时整个 11 格队列
+// **重新生成**：用户看到的视觉是"队列在不断 pop 旧元素、new 新元素"。
+// - 当前中央 entry（被切换走的那条）保留 → 移到 playlistWindow[6]（上滑）或 [4]（下滑）
+//   → 用户能看到"刚播过的视频去哪儿了"
+// - 中央格 = 新视频 entry（新随机 t）
+// - 其余 9 个非中央格重新随机
+//
+// 中央格选哪个视频：videos 数组里 activeIndex 的上一/下一个。
+// 同名视频可以出现在中央格的同时留在原位（不强制去重）——
+// 这样"同视频在不同 entry 进度独立"的设计就被真正体现出来。
+function shiftWindow(delta) {
+        if (!delta || videos.length === 0) return;
+        // 0) 取出当前中央 entry，准备保留它
+        const oldCenter = playlistWindow[5] ? { uuid: playlistWindow[5].uuid, t: playlistWindow[5].t } : null;
+        // 1) 决定下一个中央视频：videos 数组里 activeIndex 的上一/下一个
         if (delta > 0) {
-            // 上滑：左移。位置 i = 位置 i+1；末尾(10)补随机
-            const next = new Array(WINDOW_SIZE);
-            for (let i = 0; i < WINDOW_SIZE - 1; i++) next[i] = playlistWindow[i + 1];
-            next[WINDOW_SIZE - 1] = _makeRandomEntry();
-            playlistWindow = next;
+            activeIndex = (activeIndex + 1) % videos.length;
         } else {
-            // 下滑：右移。位置 i = 位置 i-1；开头(0)补随机
-            const next = new Array(WINDOW_SIZE);
-            for (let i = 1; i < WINDOW_SIZE; i++) next[i] = playlistWindow[i - 1];
-            next[0] = _makeRandomEntry();
-            playlistWindow = next;
+            activeIndex = (activeIndex - 1 + videos.length) % videos.length;
         }
-        // 同步 activeIndex 到 playlistWindow[5].uuid 在 videos 数组中的索引
-        const curUuid = playlistWindow[5] && playlistWindow[5].uuid;
-        if (curUuid) {
-            const idx = videos.findIndex(v => v.name === curUuid);
-            if (idx >= 0) activeIndex = idx;
+        // 2) 重建 11 格：中央 = 新视频（全新 entry，新随机 t）
+        //    其余 10 格 = 9 个新随机 + 1 个旧中央 entry（移到第 6 或第 4 格保留历史）
+        const next = new Array(WINDOW_SIZE);
+        for (let i = 0; i < WINDOW_SIZE; i++) next[i] = _makeRandomEntry();
+        const cur = videos[activeIndex];
+        next[5] = { uuid: cur ? cur.name : null, t: _timeFor(cur) };
+        // 把旧中央 entry 保留到非中央位置（用户能看到它去哪了）
+        if (oldCenter && oldCenter.uuid) {
+            const keepIdx = (delta > 0) ? 6 : 4;
+            next[keepIdx] = oldCenter;
         }
+        playlistWindow = next;
         syncAppState();
     }
 
@@ -457,16 +465,21 @@
     });
 
     function applyIndex(delta) {
-        // delta: +1 上滑一步（队列左移）；-1 下滑一步（队列右移）
+        // delta: +1 切到下一个视频（videos 数组 activeIndex + 1）
+        // delta: -1 切到上一个视频（videos 数组 activeIndex - 1）
+        // 切完后整个 11 格队列重新生成（shiftWindow 内部），
+        // 中央格 = 新视频 entry（新 t），其余 10 格全部 pop + new 随机 entry。
         if (!delta || videos.length === 0) return;
         recordActivePosition();
         shiftWindow(delta);
         playing = autoplay;
-        loadVideoForIndex(5);  // playlistWindow 中间格
+        loadVideoForIndex(5);  // playlistWindow 中间格 = 新视频
         _videoFadeIn();          // 新视频渐入动画（与纵向滚动吸附同步播放）
         updateInfo();
         updatePlayback();
-        updatePlaylistStripActive();
+        // 11 格全部重新生成 → 必须重渲染 strip，不能只调 updatePlaylistStripActive
+        // （后者只更新 active 状态和时间/进度，不重建 DOM）
+        renderPlaylistStrip();
     }
 
     // 把 playlistWindow（11 格 (uuid, t)）渲染到设置页上方的播放列表条
@@ -528,19 +541,26 @@
             item.addEventListener('click', () => {
                 const targetIdx = Number(item.dataset.widx);
                 if (targetIdx === 5) return;  // 点击当前格不做任何事
-                // 移动 playlistWindow 让 targetIdx 进入中央（applyIndex 是 shift，delta 方向为 +(5-targetIdx)）
-                const delta = 5 - targetIdx;
+                // 用户点击的是 playlistWindow 中的某个 entry —— 直接把那个 entry
+                // 推到中央（中央格 = 这个 entry 的 (uuid, t)），其余 10 格重新随机。
+                // 不复用旧 entry 的 t：用户看到的就是"点谁谁就播放，原 entry 保留历史"。
                 recordActivePosition();
-                // 多次 shift 让目标落在 playlistWindow[5]
-                for (let i = 0; i < Math.abs(delta); i++) {
-                    if (delta > 0) shiftWindow(1);
-                    else shiftWindow(-1);
+                const targetEntry = playlistWindow[targetIdx];
+                if (!targetEntry || !targetEntry.uuid) return;
+                const targetVideo = videos.find(v => v.name === targetEntry.uuid);
+                // 重新生成 11 格：10 格新随机，中央 = 被点击 entry 的复制（保留 t）
+                const next = new Array(WINDOW_SIZE);
+                for (let i = 0; i < WINDOW_SIZE; i++) next[i] = _makeRandomEntry();
+                next[5] = { uuid: targetEntry.uuid, t: targetEntry.t };
+                playlistWindow = next;
+                if (targetVideo) {
+                    activeIndex = videos.indexOf(targetVideo);
                 }
                 loadVideoForIndex(5);
                 _videoFadeIn();
                 updateInfo();
                 updatePlayback();
-                updatePlaylistStripActive();
+                renderPlaylistStrip();
             });
             playlistStrip.appendChild(item);
         });
