@@ -460,33 +460,43 @@
         updatePlaylistStripActive();
     }
 
-    // 把当前播放列表（videos 数组，顺序 = 用户感知顺序）渲染到设置页上方的播放列表条
-    // 仅 11 格 playlistWindow 的中间（videos 序列上下文）高亮当前条目
+    // 把 playlistWindow（11 格 (uuid, t)）渲染到设置页上方的播放列表条
+    // 每格 = 一个队列位置：uuid = 该位置的视频名，t = 该视频被播到的时刻
+    // 中央格（playlistWindow[5]）= 当前播放；0-4 = 前 5；6-10 = 后 5
+    // 视觉上呈现"完整播放队列视图"，每个条目都展示自己的 (uuid, t)
     function renderPlaylistStrip() {
         if (!playlistStrip) return;
         playlistStrip.innerHTML = '';
-        if (videos.length === 0) return;
-        // 当前活跃的视频 uuid（来自 playlistWindow 中间格）
-        const curEntry = playlistWindow[5];
-        const curUuid = curEntry ? curEntry.uuid : (videos[activeIndex] && videos[activeIndex].name);
-        // 显示完整 videos 列表（每个条目对应 videos 数组中的索引）
-        videos.forEach((v, idx) => {
+        if (!playlistWindow || playlistWindow.length === 0) return;
+
+        playlistWindow.forEach((entry, idx) => {
             const item = document.createElement('div');
-            item.className = 'pl-item' + (v.name === curUuid ? ' active' : '');
-            item.dataset.uuid = v.name;
-            item.dataset.idx = String(idx);
-            item.title = v.name;
+            const isActive = idx === 5;
+            item.className = 'pl-item' + (isActive ? ' active' : '');
+            item.dataset.widx = String(idx);
+            // t 显示为播放进度 (mm:ss / h:mm:ss)；位置标签：前 5 / 当前 / 后 5
+            const posLabel = idx < 5 ? '前 ' + (5 - idx) : idx === 5 ? '当前' : '后 ' + (idx - 5);
+            const tStr = (entry && typeof(entry.t) === 'number' && isFinite(entry.t) && entry.t > 0)
+                ? fmtClock(entry.t)
+                : '0:00';
+            const nameStr = entry && entry.uuid ? entry.uuid : '(空)';
+            item.title = nameStr + '  @  ' + tStr;
             item.innerHTML =
-                '<div class="pl-idx">#' + (idx + 1) + '</div>' +
-                '<div class="pl-name">' + escapeHtml(v.name) + '</div>';
+                '<div class="pl-pos">' + posLabel + '</div>' +
+                '<div class="pl-name">' + escapeHtml(nameStr) + '</div>' +
+                '<div class="pl-time">' + escapeHtml(tStr) + '</div>';
             item.addEventListener('click', () => {
-                // 点击列表项：把目标视频置为当前 + 应用上下滑动画逻辑
-                const targetIdx = Number(item.dataset.idx);
-                if (videos[targetIdx] && videos[targetIdx].name === curUuid) return;
-                // 重建 playlistWindow 让目标在中间，触发一次完整切换
+                const targetIdx = Number(item.dataset.widx);
+                if (targetIdx === 5) return;  // 点击当前格不做任何事
+                // 移动 playlistWindow 让 targetIdx 进入中央（applyIndex 是 shift，delta 方向为 +(5-targetIdx)）
+                const delta = 5 - targetIdx;
                 recordActivePosition();
-                activeIndex = targetIdx;
-                setPlaylistWindow(targetIdx);
+                // 多次 shift 让目标落在 playlistWindow[5]
+                let cur = playlistWindow;
+                for (let i = 0; i < Math.abs(delta); i++) {
+                    if (delta > 0) shiftWindow(1);
+                    else shiftWindow(-1);
+                }
                 loadVideoForIndex(5);
                 _videoFadeIn();
                 updateInfo();
@@ -498,15 +508,24 @@
         scrollActiveStripIntoView();
     }
 
-    // 切换高亮 + 平滑滚到中间（让 .active 始终在可视范围内）
+    // 切换高亮 + 平滑滚到中间（让中央格始终在可视范围内）
     function updatePlaylistStripActive() {
         if (!playlistStrip) return;
-        const curEntry = playlistWindow[5];
-        const curUuid = curEntry ? curEntry.uuid : null;
         const items = playlistStrip.querySelectorAll('.pl-item');
-        items.forEach(it => {
-            if (it.dataset.uuid === curUuid) it.classList.add('active');
+        items.forEach((it, i) => {
+            if (i === 5) it.classList.add('active');
             else it.classList.remove('active');
+            // 同时把 playlistWindow 自身的最新 t 同步回条目（中间格每 500ms 实时 t 已更新）
+            const entry = playlistWindow[i];
+            if (entry) {
+                const tEl = it.querySelector('.pl-time');
+                if (tEl) {
+                    const tStr = (typeof entry.t === 'number' && isFinite(entry.t) && entry.t > 0)
+                        ? fmtClock(entry.t)
+                        : '0:00';
+                    tEl.textContent = tStr;
+                }
+            }
         });
         scrollActiveStripIntoView();
     }

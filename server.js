@@ -239,6 +239,21 @@ function detectCodecs(filePath) {
 }
 
 /**
+ * Sync ffprobe to read container duration in seconds (for the /videos API).
+ * Returns 0 on failure. Used as a fallback when HLS meta.json is missing.
+ */
+function probeDurationSync(filePath) {
+    try {
+        const out = require('child_process').execFileSync('ffprobe',
+            ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', filePath],
+            { stdio: ['ignore', 'pipe', 'ignore'], timeout: 4000 });
+        const j = JSON.parse(out.toString());
+        const d = parseFloat(j && j.format && j.format.duration);
+        return Number.isFinite(d) && d > 0 ? d : 0;
+    } catch (_) { return 0; }
+}
+
+/**
  * Detect the display rotation (in degrees) of the first video stream.
  * Phone recordings (e.g. iPhone MOV) store a Display Matrix / rotate tag; a
  * direct `-c copy` remux to TS would carry it only as display-matrix SEI which
@@ -371,11 +386,13 @@ async function doGenerateHls(name) {
         // meta.json records the generation version + source size so hlsExists()
         // can detect stale output and every asset regenerates on version bumps.
         const srcStat = fs.statSync(srcPath);
+        const duration = probeDurationSync(srcPath);  // 同步 ffprobe 一次，给前端列表展示用
         fs.writeFileSync(path.join(HLS_DIR, name, 'meta.json'), JSON.stringify({
             version: HLS_GEN_VERSION,
             size: srcStat.size,
             mtime: srcStat.mtimeMs,
-            rotation
+            rotation,
+            duration
         }));
         logLine(`hls generated: ${name} (${countSegments(path.join(HLS_DIR, name))} segs, rotation ${rotation})`);
     } catch (e) {
@@ -398,8 +415,18 @@ function listVideoFiles() {
         .filter((f) => VIDEO_EXTS.has(path.extname(f).toLowerCase()) && !f.startsWith('.'))
         .map((name) => {
             const stat = fs.statSync(path.join(OBS_DIR, name));
+            // duration: 优先读 HLS meta.json（生成时已 ffprobe），否则同步 ffprobe 一次（缓存到内存）
+            let duration = 0;
+            const metaPath = path.join(HLS_DIR, name, 'meta.json');
+            if (fs.existsSync(metaPath)) {
+                try {
+                    const m = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+                    if (Number.isFinite(m.duration) && m.duration > 0) duration = m.duration;
+                } catch (_) {}
+            }
+            if (!duration) duration = probeDurationSync(path.join(OBS_DIR, name));
             return {
-                name, size: stat.size, mtime: stat.mtime,
+                name, size: stat.size, mtime: stat.mtime, duration,
                 url: `/obs/${encodeURIComponent(name)}`,
                 hls: `/hls/${encodeURIComponent(name)}/index.m3u8`,
                 hlsReady: hlsExists(name)
