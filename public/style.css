@@ -221,7 +221,8 @@ html, body {
 }
 
 /* 播放列表条：固定在设置页 (page 2) 上方，水平滚动 11 格 (uuid, t) 视图；
-   每格显示：pos（前 N / 当前 / 后 N）+ uuid + t 播放时刻
+   每格显示：pos（前 N / 当前 / 后 N）+ 状态徽标（未播/看到/播放中）+ uuid
+   + 当前已播时长 / 总时长 mm:ss + 进度条
    鼠标 / 键盘 / 触摸切换视频时高亮当前条目（中央 playlistWindow[5]） */
 .playlist-strip {
     flex: 0 0 auto;
@@ -239,8 +240,8 @@ html, body {
 .playlist-strip::-webkit-scrollbar { display: none; }
 .playlist-strip .pl-item {
     flex: 0 0 auto;
-    width: 78px;
-    min-height: 84px;
+    width: 96px;
+    min-height: 96px;
     border-radius: 8px;
     background: rgba(255,255,255,.06);
     color: rgba(255,255,255,.85);
@@ -269,6 +270,12 @@ html, body {
     color: #fff;
     box-shadow: 0 0 0 1px rgba(254, 44, 85, .55);
 }
+.playlist-strip .pl-item .pl-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 4px;
+}
 .playlist-strip .pl-item .pl-pos {
     font-size: 10px;
     font-weight: 700;
@@ -278,6 +285,31 @@ html, body {
 .playlist-strip .pl-item.active .pl-pos {
     opacity: 1;
     color: #ffd0db;
+}
+.playlist-strip .pl-item .pl-status {
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 6px;
+    white-space: nowrap;
+    letter-spacing: .02em;
+}
+.playlist-strip .pl-item .pl-status-unwatched {
+    background: rgba(255,255,255,.10);
+    color: rgba(255,255,255,.55);
+}
+.playlist-strip .pl-item .pl-status-watched {
+    background: rgba(84, 197, 255, .18);
+    color: #54c5ff;
+}
+.playlist-strip .pl-item .pl-status-playing {
+    background: rgba(254, 44, 85, .25);
+    color: #ffd0db;
+}
+.playlist-strip .pl-item.active .pl-status-playing {
+    background: rgba(254, 44, 85, .45);
+    color: #fff;
 }
 .playlist-strip .pl-item .pl-name {
     overflow: hidden;
@@ -289,13 +321,29 @@ html, body {
     word-break: break-all;
 }
 .playlist-strip .pl-item .pl-time {
-    margin-top: auto;
     font-variant-numeric: tabular-nums;
     font-weight: 600;
     color: rgba(255,255,255,.65);
 }
 .playlist-strip .pl-item.active .pl-time {
     color: #fff;
+}
+.playlist-strip .pl-item .pl-bar {
+    margin-top: auto;
+    height: 3px;
+    width: 100%;
+    background: rgba(255,255,255,.10);
+    border-radius: 2px;
+    overflow: hidden;
+}
+.playlist-strip .pl-item .pl-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #fe2c55, #ff6680);
+    width: 0%;
+    transition: width .35s ease;
+}
+.playlist-strip .pl-item.active .pl-bar-fill {
+    background: linear-gradient(90deg, #ff6680, #ffd0db);
 }
 
 .info-row, .setting-row {

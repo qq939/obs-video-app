@@ -463,28 +463,57 @@
     // 把 playlistWindow（11 格 (uuid, t)）渲染到设置页上方的播放列表条
     // 每格 = 一个队列位置：uuid = 该位置的视频名，t = 该视频被播到的时刻
     // 中央格（playlistWindow[5]）= 当前播放；0-4 = 前 5；6-10 = 后 5
-    // 视觉上呈现"完整播放队列视图"，每个条目都展示自己的 (uuid, t)
+    // 视觉上呈现"完整播放队列视图"，每个条目都展示自己的播放信息
+    // （文件名、已播时长 mm:ss、总时长 mm:ss、进度条、状态徽标）
     function renderPlaylistStrip() {
         if (!playlistStrip) return;
         playlistStrip.innerHTML = '';
         if (!playlistWindow || playlistWindow.length === 0) return;
+
+        // 用 name -> video 对象 建索引，用于查 duration / size 等元信息
+        const videoByName = new Map();
+        for (const v of videos) videoByName.set(v.name, v);
 
         playlistWindow.forEach((entry, idx) => {
             const item = document.createElement('div');
             const isActive = idx === 5;
             item.className = 'pl-item' + (isActive ? ' active' : '');
             item.dataset.widx = String(idx);
-            // t 显示为播放进度 (mm:ss / h:mm:ss)；位置标签：前 5 / 当前 / 后 5
+            // 位置标签：前 5 / 当前 / 后 5
             const posLabel = idx < 5 ? '前 ' + (5 - idx) : idx === 5 ? '当前' : '后 ' + (idx - 5);
-            const tStr = (entry && typeof(entry.t) === 'number' && isFinite(entry.t) && entry.t > 0)
-                ? fmtClock(entry.t)
-                : '0:00';
+
+            const v = entry && entry.uuid ? videoByName.get(entry.uuid) : null;
             const nameStr = entry && entry.uuid ? entry.uuid : '(空)';
-            item.title = nameStr + '  @  ' + tStr;
+            // 当前播放进度（中央格走实时 video.currentTime；其他格用 playlistWindow[i].t）
+            const liveT = (isActive && isFinite(video.currentTime)) ? video.currentTime : 0;
+            const t = isActive ? liveT : (entry && typeof entry.t === 'number' && isFinite(entry.t)) ? entry.t : 0;
+            const dur = v && Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+            const pct = dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0;
+
+            // 状态：未播（t 几乎为 0）/ 已看到 X / 播放中
+            let statusText, statusClass;
+            if (isActive) {
+                statusText = '播放中'; statusClass = 'pl-status-playing';
+            } else if (t <= 0.5) {
+                statusText = '未播'; statusClass = 'pl-status-unwatched';
+            } else {
+                statusText = '看到 ' + fmtClock(t); statusClass = 'pl-status-watched';
+            }
+
+            const timeText = dur > 0
+                ? fmtClock(t) + ' / ' + fmtClock(dur)
+                : fmtClock(t) + ' / --:--';
+
+            item.title = nameStr + '\n' + timeText + (dur > 0 ? '  (' + Math.round(pct) + '%)' : '') + '\n' + statusText;
             item.innerHTML =
-                '<div class="pl-pos">' + posLabel + '</div>' +
+                '<div class="pl-head">' +
+                    '<span class="pl-pos">' + posLabel + '</span>' +
+                    '<span class="pl-status ' + statusClass + '">' + escapeHtml(statusText) + '</span>' +
+                '</div>' +
                 '<div class="pl-name">' + escapeHtml(nameStr) + '</div>' +
-                '<div class="pl-time">' + escapeHtml(tStr) + '</div>';
+                '<div class="pl-time">' + escapeHtml(timeText) + '</div>' +
+                '<div class="pl-bar"><div class="pl-bar-fill" style="width:' + pct.toFixed(1) + '%"></div></div>';
+
             item.addEventListener('click', () => {
                 const targetIdx = Number(item.dataset.widx);
                 if (targetIdx === 5) return;  // 点击当前格不做任何事
@@ -492,7 +521,6 @@
                 const delta = 5 - targetIdx;
                 recordActivePosition();
                 // 多次 shift 让目标落在 playlistWindow[5]
-                let cur = playlistWindow;
                 for (let i = 0; i < Math.abs(delta); i++) {
                     if (delta > 0) shiftWindow(1);
                     else shiftWindow(-1);
@@ -512,18 +540,43 @@
     function updatePlaylistStripActive() {
         if (!playlistStrip) return;
         const items = playlistStrip.querySelectorAll('.pl-item');
+        // 用 name -> video 对象 建索引，用于查 duration
+        const videoByName = new Map();
+        for (const v of videos) videoByName.set(v.name, v);
+
         items.forEach((it, i) => {
             if (i === 5) it.classList.add('active');
             else it.classList.remove('active');
             // 同时把 playlistWindow 自身的最新 t 同步回条目（中间格每 500ms 实时 t 已更新）
             const entry = playlistWindow[i];
-            if (entry) {
-                const tEl = it.querySelector('.pl-time');
-                if (tEl) {
-                    const tStr = (typeof entry.t === 'number' && isFinite(entry.t) && entry.t > 0)
-                        ? fmtClock(entry.t)
-                        : '0:00';
-                    tEl.textContent = tStr;
+            if (!entry) return;
+            const v = entry.uuid ? videoByName.get(entry.uuid) : null;
+            const dur = v && Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+            // 中间格：实时 video.currentTime；其他格：playlistWindow[i].t
+            const t = (i === 5 && isFinite(video.currentTime))
+                ? video.currentTime
+                : (typeof entry.t === 'number' && isFinite(entry.t) && entry.t > 0) ? entry.t : 0;
+            const pct = dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0;
+
+            const tEl = it.querySelector('.pl-time');
+            if (tEl) {
+                const timeText = dur > 0
+                    ? fmtClock(t) + ' / ' + fmtClock(dur)
+                    : fmtClock(t) + ' / --:--';
+                tEl.textContent = timeText;
+            }
+            const barEl = it.querySelector('.pl-bar-fill');
+            if (barEl) barEl.style.width = pct.toFixed(1) + '%';
+
+            // 中央格的状态徽标始终是"播放中"，其他格根据 t 重新评估
+            const statusEl = it.querySelector('.pl-status');
+            if (statusEl && i !== 5) {
+                if (t <= 0.5) {
+                    statusEl.textContent = '未播';
+                    statusEl.className = 'pl-status pl-status-unwatched';
+                } else {
+                    statusEl.textContent = '看到 ' + fmtClock(t);
+                    statusEl.className = 'pl-status pl-status-watched';
                 }
             }
         });
@@ -681,6 +734,8 @@
                     }
                 }
             }
+            // 刷新设置页播放列表条：中央格的 pl-time / pl-bar-fill 跟着 currentTime 走
+            updatePlaylistStripActive();
         }
     }, 500);
 

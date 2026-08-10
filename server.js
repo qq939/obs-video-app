@@ -239,10 +239,18 @@ function detectCodecs(filePath) {
 }
 
 /**
- * Sync ffprobe to read container duration in seconds (for the /videos API).
- * Returns 0 on failure. Used as a fallback when HLS meta.json is missing.
+ * Read container duration in seconds (for the /videos API).
+ * Primary: sum EXTINF from the HLS playlist we already generated (no external deps).
+ * Fallback: ffprobe on the source file when HLS isn't available.
+ * Returns 0 if neither path yields a positive number.
  */
-function probeDurationSync(filePath) {
+function probeDurationSync(filePath, name) {
+    // 1) 从 HLS index.m3u8 求和 EXTINF（不依赖 ffmpeg/ffprobe，对老 HLS 也有效）
+    if (name) {
+        const d = hlsDurationSync(name);
+        if (d > 0) return d;
+    }
+    // 2) ffprobe 兜底（容器里若装了 ffmpeg 才会命中）
     try {
         const out = require('child_process').execFileSync('ffprobe',
             ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', filePath],
@@ -250,6 +258,24 @@ function probeDurationSync(filePath) {
         const j = JSON.parse(out.toString());
         const d = parseFloat(j && j.format && j.format.duration);
         return Number.isFinite(d) && d > 0 ? d : 0;
+    } catch (_) { return 0; }
+}
+
+/**
+ * Sum EXTINF durations in <HLS_DIR>/<name>/index.m3u8 to derive total seconds.
+ * Pure file read + tiny regex parse, safe to call from listVideoFiles() on every /videos hit.
+ */
+function hlsDurationSync(name) {
+    try {
+        const m3u8 = fs.readFileSync(path.join(HLS_DIR, name, 'index.m3u8'), 'utf8');
+        // 形如 "#EXTINF:1.999633," —— 只匹配逗号前的浮点
+        const re = /#EXTINF:([0-9.]+)/g;
+        let total = 0, m;
+        while ((m = re.exec(m3u8)) !== null) {
+            const v = parseFloat(m[1]);
+            if (Number.isFinite(v) && v > 0) total += v;
+        }
+        return total > 0 ? total : 0;
     } catch (_) { return 0; }
 }
 
@@ -386,7 +412,7 @@ async function doGenerateHls(name) {
         // meta.json records the generation version + source size so hlsExists()
         // can detect stale output and every asset regenerates on version bumps.
         const srcStat = fs.statSync(srcPath);
-        const duration = probeDurationSync(srcPath);  // 同步 ffprobe 一次，给前端列表展示用
+        const duration = probeDurationSync(srcPath, name);  // HLS EXTINF 求和（或 ffprobe 兜底），给前端列表展示用
         fs.writeFileSync(path.join(HLS_DIR, name, 'meta.json'), JSON.stringify({
             version: HLS_GEN_VERSION,
             size: srcStat.size,
@@ -424,7 +450,7 @@ function listVideoFiles() {
                     if (Number.isFinite(m.duration) && m.duration > 0) duration = m.duration;
                 } catch (_) {}
             }
-            if (!duration) duration = probeDurationSync(path.join(OBS_DIR, name));
+            if (!duration) duration = probeDurationSync(path.join(OBS_DIR, name), name);
             return {
                 name, size: stat.size, mtime: stat.mtime, duration,
                 url: `/obs/${encodeURIComponent(name)}`,
