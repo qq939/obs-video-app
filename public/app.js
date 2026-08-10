@@ -765,26 +765,16 @@
 
         if (currentPage !== 1) { setPage(1); return; }
 
-        // Long-press on main feed -> upload
+        // 第 1 页（视频）：点击/长按 = 播放/暂停。上下翻页交由 swipe 手势接管。
+        // （长按视频期间已被 beginFastSpeed 接管为 5x 倍速，松手后由 endFastSpeed 恢复；
+        //   长按空白处不再触发上传弹窗，避免误触。）
         if (longPressTimer && !longPressMoved) {
             clearTimeout(longPressTimer);
             longPressTimer = null;
-            uploadModal.classList.remove('hidden');
-            progressArea.classList.add('hidden');
-            return;
         }
-
-        // Tap on video item —— 把点击位置映射到 playlistWindow 索引，再决定上下滑几步
-        const item = target.closest('.video-item');
-        if (!item) return;
-        const domIdx = Array.prototype.indexOf.call(item.parentNode.children, item);
-        const wn = playlistWindow.length;  // 11
-        if (wn === 0) return;
-        const winIdx = domIdx % wn;        // 0..10
-        const center = 5;
-        const delta = winIdx - center;     // +1..+5 上滑；-1..-5 下滑
-        if (delta === 0) { playing = !playing; updatePlayback(); }
-        else { applyIndex(delta); }
+        if (videos.length === 0) return;
+        playing = !playing;
+        updatePlayback();
     }
 
     // ---- Touch ----
@@ -821,12 +811,10 @@
             longPressTimer = null;
             longPressMoved = true;
             if (onVideo) {
-                // 长按视频 → 5 倍速
+                // 长按视频 → 5 倍速（播放/暂停仍由松手时的 handleTap 处理）
                 beginFastSpeed();
-            } else if (currentPage === 1) {
-                uploadModal.classList.remove('hidden');
-                progressArea.classList.add('hidden');
             }
+            // 长按空白处：什么都不做（之前会触发上传弹窗，现已移除）
         }, LONG_PRESS_MS);
 
         // Edge hints
@@ -893,11 +881,10 @@
         longPressTimer = setTimeout(() => {
             longPressTimer = null;
             if (onVideo) {
+                // 长按视频 → 5 倍速（松手后由 endFastSpeed 恢复，播放/暂停由 mouseup->handleTap 处理）
                 beginFastSpeed();
-            } else if (currentPage === 1) {
-                uploadModal.classList.remove('hidden');
-                progressArea.classList.add('hidden');
             }
+            // 长按空白处：什么都不做（之前会触发上传弹窗，现已移除）
         }, LONG_PRESS_MS);
     });
     viewport.addEventListener('mousemove', (e) => {
