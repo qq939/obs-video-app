@@ -107,11 +107,14 @@
         return { uuid: v ? v.name : null, t: _timeFor(v) };
     }
 
-    // 进度 t：优先 positions 缓存（容器存续内持久化），无缓存则随机
+    // 进度 t：仅用于"刚创建一个新 entry"的初始值。
+    // entry.t 一旦写下去就跟这个 entry 绑定，不能被 positions 覆盖。
+    // 原因：同一视频可能在 11 格中以多个 entry 出现，每个 entry 各自有独立的播放历史；
+    // 共享 positions 会让所有 entry 退化成同一个 t。
     function _timeFor(v) {
         if (!v) return 0;
-        if (positions.has(v.name)) return positions.get(v.name);
-        const dur = (Number.isFinite(v.duration)) ? v.duration : 60;
+        // 新 entry 永远从 0 ~ duration 随机初始化
+        const dur = (Number.isFinite(v.duration) && v.duration > 0) ? v.duration : 60;
         return Math.max(0, Math.random() * Math.max(1, dur - 0.5));
     }
 
@@ -152,6 +155,12 @@
         // 后5格 (uuid, t)：有缓存用缓存，无缓存随机
         for (let i = 6; i < WINDOW_SIZE; i++) w[i] = _makeRandomEntry();
         playlistWindow = w;
+        // 保险：把 activeIndex 同步到 playlistWindow[5].uuid，确保两边指向同一视频
+        const curUuid = playlistWindow[5] && playlistWindow[5].uuid;
+        if (curUuid) {
+            const idx = videos.findIndex(v => v.name === curUuid);
+            if (idx >= 0) activeIndex = idx;
+        }
         syncAppState();
     }
 
@@ -618,12 +627,13 @@
 
         destroyHls();
 
-        // Restore position: 优先取 playlistWindow 中的 t；其次 positions 缓存
-        const seekT = entry.t || positions.get(v.name);
-        if (seekT !== undefined && seekT > 0) {
+        // Restore position: 严格取 playlistWindow entry 自己的 t（不再读 positions）
+        // 因为 entry.t 是 entry 自身的属性，不能跨 entry 共享
+        const seekT = (typeof entry.t === 'number' && isFinite(entry.t) && entry.t > 0)
+            ? entry.t : 0;
+        if (seekT > 0) {
             video._pendingSeek = seekT;
         }
-        if (positions.has(v.name)) positions.delete(v.name);
 
         if (v.hls && v.hlsReady && hlsCapable(v)) {
             video.src = '';
@@ -674,12 +684,15 @@
     }
 
     function recordActivePosition() {
+        // 把 video.currentTime 写回 playlistWindow[5].t —— 这是"当前中央 entry 自己"的进度
+        // 不写 positions Map：positions 是跨 entry 全局共享的，会污染同名 entry 的独立历史
         if (videos.length === 0) return;
-        const v = videos[activeIndex];
-        if (!v) return;
+        const entry = playlistWindow[5];
+        if (!entry) return;
         if (isFinite(video.currentTime) && video.currentTime > 0.5) {
-            positions.set(v.name, video.currentTime);
-            positions2localStorage();  // 持久化到 localStorage
+            entry.t = video.currentTime;
+            // 持久化（仍可走 positions2localStorage，但 data 应是 playlistWindow[5] 当前 t）
+            // 这里保守不动：上一版的 positions 用法现在不被任何地方读取，等下一次清理 PR 再删
         }
     }
 
@@ -687,18 +700,11 @@
     function updatePlayback() {
         if (videos.length === 0) return;
 
+        // 进度完全由 entry.t 主导（loadVideoForIndex 已经写入 video._pendingSeek，
+        // 在 loadedmetadata / canplay 时 seek）。这里不再读 positions —— 否则会把
+        // 同名视频的"全局最后位置"强加给当前 entry，破坏 entry 之间进度独立。
         const v = videos[activeIndex];
-        const savedPos = v ? positions.get(v.name) : undefined;
-
-        if (savedPos !== undefined && isFinite(video.duration)) {
-            if (savedPos < video.duration - 0.3 && Math.abs(video.currentTime - savedPos) > 0.5) {
-                video.currentTime = savedPos;
-                positions.delete(v.name);
-            }
-        } else if (savedPos !== undefined && !video._pendingSeek) {
-            video._pendingSeek = savedPos;
-            positions.delete(v.name);
-        }
+        if (!v) return;
 
         if (playing) {
             video.muted = false;
