@@ -36,6 +36,7 @@
     const seekFill = document.getElementById('seekFill');
     const seekThumb = document.getElementById('seekThumb');
     const seekLabel = document.getElementById('seekLabel');
+    const playlistStrip = document.getElementById('playlistStrip');
     const uploadModal = document.getElementById('uploadModal');
     const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('fileInput');
@@ -389,6 +390,7 @@
             destroyHls();
             updateInfo();
             playlistWindow = [];
+            if (playlistStrip) playlistStrip.innerHTML = '';
             syncAppState();
             return;
         }
@@ -411,6 +413,7 @@
         feeds.forEach(f => scrollToIndex(f, 5));
         buildPageDots();
         loadVideoForIndex(5);
+        renderPlaylistStrip();  // 设置页上方播放列表条
         updateInfo();
         feedReady = true;  // 初始化完成，启用 scroll handler
     }
@@ -454,6 +457,69 @@
         _videoFadeIn();          // 新视频渐入动画（与纵向滚动吸附同步播放）
         updateInfo();
         updatePlayback();
+        updatePlaylistStripActive();
+    }
+
+    // 把当前播放列表（videos 数组，顺序 = 用户感知顺序）渲染到设置页上方的播放列表条
+    // 仅 11 格 playlistWindow 的中间（videos 序列上下文）高亮当前条目
+    function renderPlaylistStrip() {
+        if (!playlistStrip) return;
+        playlistStrip.innerHTML = '';
+        if (videos.length === 0) return;
+        // 当前活跃的视频 uuid（来自 playlistWindow 中间格）
+        const curEntry = playlistWindow[5];
+        const curUuid = curEntry ? curEntry.uuid : (videos[activeIndex] && videos[activeIndex].name);
+        // 显示完整 videos 列表（每个条目对应 videos 数组中的索引）
+        videos.forEach((v, idx) => {
+            const item = document.createElement('div');
+            item.className = 'pl-item' + (v.name === curUuid ? ' active' : '');
+            item.dataset.uuid = v.name;
+            item.dataset.idx = String(idx);
+            item.title = v.name;
+            item.innerHTML =
+                '<div class="pl-idx">#' + (idx + 1) + '</div>' +
+                '<div class="pl-name">' + escapeHtml(v.name) + '</div>';
+            item.addEventListener('click', () => {
+                // 点击列表项：把目标视频置为当前 + 应用上下滑动画逻辑
+                const targetIdx = Number(item.dataset.idx);
+                if (videos[targetIdx] && videos[targetIdx].name === curUuid) return;
+                // 重建 playlistWindow 让目标在中间，触发一次完整切换
+                recordActivePosition();
+                activeIndex = targetIdx;
+                setPlaylistWindow(targetIdx);
+                loadVideoForIndex(5);
+                _videoFadeIn();
+                updateInfo();
+                updatePlayback();
+                updatePlaylistStripActive();
+            });
+            playlistStrip.appendChild(item);
+        });
+        scrollActiveStripIntoView();
+    }
+
+    // 切换高亮 + 平滑滚到中间（让 .active 始终在可视范围内）
+    function updatePlaylistStripActive() {
+        if (!playlistStrip) return;
+        const curEntry = playlistWindow[5];
+        const curUuid = curEntry ? curEntry.uuid : null;
+        const items = playlistStrip.querySelectorAll('.pl-item');
+        items.forEach(it => {
+            if (it.dataset.uuid === curUuid) it.classList.add('active');
+            else it.classList.remove('active');
+        });
+        scrollActiveStripIntoView();
+    }
+
+    function scrollActiveStripIntoView() {
+        if (!playlistStrip) return;
+        const active = playlistStrip.querySelector('.pl-item.active');
+        if (!active) return;
+        const stripRect = playlistStrip.getBoundingClientRect();
+        const itemRect = active.getBoundingClientRect();
+        // 把 .active 滚到 strip 水平中间
+        const offset = (itemRect.left - stripRect.left) - (stripRect.width / 2 - itemRect.width / 2);
+        playlistStrip.scrollBy({ left: offset, behavior: 'smooth' });
     }
 
     // 切源时给视频加 .video-fading 让透明度 0 + 微下移，
@@ -943,8 +1009,11 @@
     });
 
     // ---- Keyboard navigation ----
-    // ArrowDown/ArrowUp: 第 1 页上下切换视频（同 wheel 行为，带平滑吸附动画）
-    // ArrowLeft /ArrowRight: 三页之间切换（信息页 0 / 主 feed 1 / 设置页 2，带 CSS transition 跟手）
+    // ArrowDown/ArrowUp: 三个页面都能切换视频
+    //   - 第 1 页（主 feed）：走 vertAnimateTo 平滑吸附 + 视频渐入
+    //   - 第 0 页 / 第 2 页（信息页 / 设置页）：直接 applyIndex（无纵向滚动动画，
+    //     但播放列表条高亮会自动跟随 .active 状态 + 平滑滚到可视范围）
+    // ArrowLeft / ArrowRight: 三页之间切换
     document.addEventListener('keydown', (e) => {
         // 输入控件里忽略（避免与表单交互冲突）
         const t = e.target;
@@ -953,25 +1022,35 @@
 
         switch (e.key) {
             case 'ArrowDown':
-                if (currentPage !== 1 || vertAnim) return;
+                if (vertAnim) return;
                 e.preventDefault();
-                vertAnimateTo(vertBaseTop + feeds[1].clientHeight, 1);
+                if (currentPage === 1) {
+                    vertAnimateTo(vertBaseTop + feeds[1].clientHeight, 1);
+                } else {
+                    // 第 0 / 2 页：直接切换，无纵向动画
+                    applyIndex(1);
+                }
                 break;
             case 'ArrowUp':
-                if (currentPage !== 1 || vertAnim) return;
+                if (vertAnim) return;
                 e.preventDefault();
-                vertAnimateTo(vertBaseTop - feeds[1].clientHeight, -1);
+                if (currentPage === 1) {
+                    vertAnimateTo(vertBaseTop - feeds[1].clientHeight, -1);
+                } else {
+                    applyIndex(-1);
+                }
                 break;
             case 'ArrowLeft':
-                if (currentPage <= 0) return;
-                e.preventDefault();
-                // 右滑翻到上一页：与右滑手势一致，靠 CSS transition + setProperty('--page')
-                setPage(currentPage - 1);
-                break;
-            case 'ArrowRight':
+                // 左键 = 翻到第三页（设置页）：索引 0→1→2 递增
                 if (currentPage >= PAGE_COUNT - 1) return;
                 e.preventDefault();
                 setPage(currentPage + 1);
+                break;
+            case 'ArrowRight':
+                // 右键 = 翻回第一页（信息页）：索引 2→1→0 递减
+                if (currentPage <= 0) return;
+                e.preventDefault();
+                setPage(currentPage - 1);
                 break;
         }
     });
