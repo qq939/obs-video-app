@@ -187,14 +187,15 @@ project/
 
 ### 7. HLS 流式播放（m3u8 + ts）
 
-服务端用 ffmpeg 把视频切成约 50 MiB 的 ts 分片（`hls/<name>/index.m3u8` + `seg-*.ts`，**独立文件夹，不污染 `obs/`**），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。**HLS 全自动生成，无任何「转HLS」按钮**。OBS 上传 / 下载 / 列表接口全部保留。
+服务端用 ffmpeg 把视频切成约 4 MiB 的 ts 分片（`hls/<name>/index.m3u8` + `seg-*.ts`，**独立文件夹，不污染 `obs/`**），浏览器用 hls.js（MSE）或 Safari 原生 HLS 播放，比直连大文件更流畅。**HLS 全自动生成，无任何「转HLS」按钮**。OBS 上传 / 下载 / 列表接口全部保留。
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/hls/:name/index.m3u8` | GET / HEAD | 播放列表（`application/vnd.apple.mpegurl`），支持 Range；源文件存在但分片缺失/版本过期时**自动惰性生成** |
 | `/hls/:name/seg-NNNNN.ts` | GET / HEAD | ts 分片（`video/mp2t`），支持 Range；严格 `seg-\d+\.ts` 正则防穿越 |
+| `/hls/generate-all` | POST | **手动兜底**端点，扫描 `obs/`，对所有未就绪或过期资产串行后台补齐 HLS（幂等；启动脚本固化调用） |
 
-> 无手动 HLS 接口：生成完全自动化（上传完成 / 压缩后 / 服务启动时对所有资产后台扫描）。
+> 无手动 HLS 接口：生成完全自动化（上传完成 / 压缩后 / **启动脚本固化 `POST /hls/generate-all`** 后台扫描）。
 
 生成规则：
 
@@ -202,9 +203,11 @@ project/
 - **带旋转元数据的视频**（如 iPhone MOV 的 Display Matrix）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`，ffmpeg 内置 autorotation 把旋转**烘焙进像素**（否则 `-c copy` 只把旋转写成 TS 显示矩阵 SEI，hls.js/MSE 忽略导致视频旋转 90°）
 - **`.mov` / `.mkv` 一律重编码**（QuickTime moov 位置 + codec tag 兼容性问题，避免 hls.js/MSE 播放卡顿）
 - 其它（webm/vp9 等）→ 重编码 `libx264 -crf 23 -preset medium` + `aac 128k`
-- 统一参数：`-f hls -hls_segment_size 52428800 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（**按字节切，约 50 MiB/段，GOP 对齐**，VOD，全量保留分片）
+- 统一参数：`-f hls -hls_segment_size 4194304 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（**按字节切，约 4 MiB/段，GOP 对齐**，VOD，全量保留分片，与 B 站 / YouTube 同水平）
 - 每个 `hls/<name>/` 内写 `meta.json`（`{ version, size, rotation }`）；`/videos` 的 `hlsReady` 仅在分片存在 **且** 版本匹配 **且** 源文件大小一致时为真——版本升级或源文件变化会让所有资产自动重新生成（**每个变更都赋予所有资产**）
-- 生成时机：上传完成 / 压缩后自动后台生成；**服务启动时扫描全部视频**，缺失或过期者后台补齐；**每日 UTC+8 05:00 cron**（server.js 进程内 `setInterval`，30 s 粒度，一天一次；用 `Intl.DateTimeFormat({timeZone:'Asia/Shanghai'})` 在 UTC+8 时区判定时分和日期 key）扫描 obs/，对没有当前版本 HLS 的视频后台生成；删除视频同时删除 `hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
+- 生成时机：上传完成 / 压缩后自动后台生成；**容器启动时由 `user_start.sh` 调用 `POST /hls/generate-all` 串行扫描全部视频**，缺失或过期者后台补齐；删除视频同时删除 `hls/<name>/`；同一视频并发生成只跑一个 ffmpeg（in-flight 锁）
+- **环境依赖**：`ffmpeg` + `ffprobe` 必须可用；容器内 `apt-get install -y ffmpeg` 固化（曾因缺 ffprobe 导致转码 ENOENT silent skip，所有"老 mp4"都卡在 mp4 直连）
+- **超时**：`HLS_TIMEOUT_MS = 600 * 1000`（10 分钟上限），超大视频超时被杀
 - m3u8 使用**相对分段名**（ffmpeg 在分段临时目录内运行），自动解析到 `/hls/<name>/` 下
 
 前端：
@@ -212,9 +215,10 @@ project/
 - `public/vendor/hls.min.js`（hls.js 1.5.13，jsdelivr 下载）由 `index.html` 在 `/app.js` 前引入，**必须存在**，否则非 Safari 浏览器无法走 HLS（自动回退直连 mp4/webm）
 - **播放优先级（hls > obs）**：每个 `<video>` 用 `<source>` 列表构建：第一个 source 是 `/hls/<name>/index.m3u8`（`application/vnd.apple.mpegurl`，仅当 `v.hlsReady === true`），第二个是 `/obs/<name>`（按扩展名给正确 mime，如 `.mov` 给 `video/quicktime`，`.webm` 给 `video/webm` 等）。浏览器原生处理 fallback：m3u8 加载失败自动尝试下一个 source
 - **按需缓存 + hls.js 仅挂在活动视频**：`updateVideoCache()` 只对当前活动视频保留 `preload='metadata'`，其余 `preload='none'` + `pause()`；`manageHls()` 只在活动视频的中间副本上 attach hls.js（leader `startLoad()`），其它视频不挂或销毁（远端幽灵拉流主动释放，避免后台狂拉分片）
+- hls.js 配置：`maxBufferLength: 120`（秒，约 30 段 ≈ 120 MB 缓冲，远大于 4 MiB 段大小匹配，避免过早追不上播放）
 - hls.js 致命错误：网络错误重试 1 次 → 媒体错误 `recoverMediaError()` 1 次 → 仍失败则销毁实例并回退直连 mp4/webm（`_hlsFallback` 防重挂循环）
 - Safari 原生 HLS：`NATIVE_HLS` 仅当 UA 为 Safari 且 `canPlayType('application/vnd.apple.mpegurl')` 为真（Chromium/Firefox/Edge 也报告 `maybe` 但无法播放，需用 UA 排除）
-- **无按钮**：UI 不再有「压缩 / 删除 / 转 HLS / 上传」按钮（HLS / 旋转 / mov 兼容全自动；上传通过长按空白处手势触发弹窗）
+- **无按钮**：UI 不再有「压缩 / 删除 / 转 HLS」按钮（HLS / 旋转 / mov 兼容全自动）；上传通过设置页 panel-head 内嵌的红色 "⬆ 上传" 按钮 或 长按空白处手势触发弹窗
 
 ### 8. 平台接口
 
@@ -258,8 +262,8 @@ project/
 |------|------|---------|
 | 信息页（左，`#feed0`）| 文件名 / 大小 / 时间 / 进度 / 索引 | 主屏**左滑** |
 | 中间 feed（`#feed1`）| 抖音式竖屏翻页视频流 | 上下拖拽 / wheel |
-| 设置页（右，`#feed2`）| 视频数量 / 随机开关 / 自动播放开关 / 播放速度（0.5x/1x/1.5x/2x/3x） | 主屏**右滑** |
-| 上传弹窗 | 选择文件 / 拖拽 / 进度 / 压缩后上传勾选 | **长按空白处** |
+| 设置页（右，`#feed2`）| 视频数量 / 随机开关 / 自动播放开关 / 播放速度（0.5x / 0.8x / 1x / 1.5x / 2x / 3x / 5x / 7x） | 主屏**右滑** |
+| 上传弹窗 | 选择文件 / 拖拽 / 进度 / 压缩后上传勾选 | **长按空白处** 或 设置页 panel-head 内嵌红色 "⬆ 上传" 按钮 |
 
 三页切换：`pagesEl.style.setProperty('--page', n)`，CSS `transform: translateX(calc(-1 * var(--page) * (100% / 3)))` + `transition: transform .35s`。
 
@@ -288,7 +292,8 @@ project/
 - **自动播放**：默认开启；`updatePlayback()` 对 leader `muted=false` 后 `play()`；浏览器 autoplay 策略拒绝时等首个手势
 - **无感自动播放**：手势监听 `pointermove` / `wheel` / `scroll` / `touchmove` / `keydown` 任一即视为 user gesture（不需要「按下」类事件，鼠标移动到页面即可解锁）
 - **永不静音**：全程零 `muted=true`；暂停即无声，无需 mute
-- **播放速度**：设置面板按钮（0.5x / 1x / 1.5x / 2x / 3x，默认 1.5x），通过 `video.playbackRate` 设置
+- **播放速度**：设置面板按钮（0.5x / 0.8x / 1x / 1.5x / 2x / 3x / 5x / 7x，**默认 1x**），通过 `video.playbackRate` 设置；第 1 页（信息页 / main feed）和第 2 页（设置页）共享同一速度
+- **第 1 页 5x 倒放**：信息页提供 `currentTime -= 0.5` 每 100 ms 的快速回看按钮（到 0 自动 pause）
 - **位置缓存**：`positions` Map（视频名 → 秒）。切走前 `recordActivePosition()` 记录；切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek）
 - **按需缓存**：`updateVideoCache()` 只对当前活动视频保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`；hls.js 也只挂在活动视频上（避免远处视频出声、避免远端幽灵拉流）
 - **纵向无尽头滚动**：`FEED_COPIES=3` DOM 副本存放 `playlistWindow` 渲染（11 × 3 = 33 格），中间份为「真实」位置；进 ghost 副本立即 `scrollTop` 跳回中间份，肉眼无跳变

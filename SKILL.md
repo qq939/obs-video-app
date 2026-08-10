@@ -27,10 +27,11 @@ description: 开发、测试、发现 bug、变更维护容器内 Web App 8082�
 2. 容器启动时若存在且非空，会被 `start.sh` 自动执行
 3. 必须：
    - 启动日志 → `logs/start.log`
-   - Web App 运行日志 → `logs/run.log`
-   - 用 `setsid`（非 nohup）拉起进程
+   - Web App 运行日志 → `logs/run.log`（由 `server.js` 自行写；本脚本汇流到 start.log 也可）
+   - 用 `nohup`（或 `setsid`）+ `disown` 拉起进程，确保后台持久化
    - 启动前 `pkill` 旧进程，避免端口冲突
    - 启动后做 `/health` 自检并写日志
+   - **就绪后主动补齐 HLS**：`curl -sf -X POST http://127.0.0.1:8082/hls/generate-all`，确保首屏点击就走分片播放
 
 ```bash
 #!/bin/bash
@@ -42,11 +43,28 @@ ts() { date "+%Y-%m-%d %H:%M:%S"; }
 echo "[$(ts)] begin" >> "${LOG_DIR}/start.log"
 cd "${PROJECT_DIR}" || exit 1
 pkill -f "node ${PROJECT_DIR}/server.js" 2>/dev/null && sleep 1
-setsid node "${PROJECT_DIR}/server.js" >> "${LOG_DIR}/run.log" 2>&1 &
-sleep 2
-curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
-  && echo "[$(ts)] health OK" >> "${LOG_DIR}/start.log" \
-  || echo "[$(ts)] health FAIL" >> "${LOG_DIR}/start.log"
+pkill -f "node server.js" 2>/dev/null && sleep 1
+nohup node server.js >> "${LOG_DIR}/start.log" 2>&1 &
+SERVER_PID=$!
+disown $SERVER_PID 2>/dev/null || true
+echo "[$(ts)] server.js started (PID $SERVER_PID)" >> "${LOG_DIR}/start.log"
+
+# 等待 /health 就绪（最多 30 秒）
+READY=0
+for i in $(seq 1 30); do
+    if curl -sf http://127.0.0.1:8082/health >/dev/null 2>&1; then
+        READY=1
+        echo "[$(ts)] health OK" >> "${LOG_DIR}/start.log"
+        break
+    fi
+    sleep 1
+done
+[ "$READY" = "1" ] || echo "[$(ts)] health FAIL after 30s" >> "${LOG_DIR}/start.log"
+
+# 就绪后补齐所有缺失的 HLS（幂等）
+curl -sf -X POST http://127.0.0.1:8082/hls/generate-all >> "${LOG_DIR}/start.log" 2>&1 || \
+    echo "[$(ts)] /hls/generate-all WARN" >> "${LOG_DIR}/start.log"
+exit 0   # 不阻塞平台启动流程
 ```
 
 ## /ask/claude 链路（勿打破）
@@ -150,12 +168,13 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 
 ### 面板与播放
 - 面板占半屏：`.side-panel { width: 50%; min-width: 240px }`；feed 偏移 `left/right: 50%`
-- 信息面板（左）：文件名 / 大小 / 时间 / 进度 / 索引
-- 设置面板（右）：视频数量 / 随机播放开关 / 自动播放开关 / 播放速度（0.5x / 1x / 1.5x / 2x / 3x，默认 1.5x）
-- **纯手势操作**（无任何按钮）：
+- 信息面板（左）：文件名 / 大小 / 时间 / 进度 / 索引；**提供 5x 倒放按钮**（`currentTime -= 0.5` 每 100 ms，到 0 自动 pause）用于快速回看
+- 设置面板（右）：视频数量 / 随机播放开关 / 自动播放开关 / 播放速度（**8 档：0.5x / 0.8x / 1x / 1.5x / 2x / 3x / 5x / 7x，默认 1x**）
+- **纯手势 + 设置页内嵌上传按钮**：
   - **长按空白处** → 打开上传弹窗（`#uploadModal`）
+  - **设置页 panel-head** → 内嵌唯一的红色 "⬆ 上传" 按钮（FAB 替代）
   - **左滑** → 打开信息面板；**右滑** → 打开设置面板
-  - 视频点击 / 双击 / 拖动控制播放
+  - 视频点击 / 双击 / 拖动控制播放；**长按视频 → 5x 加速**（松手恢复 1x）
   - 点击信息/设置面板外区域 → 关闭面板
 - 上传弹窗：支持点击 / 拖拽选择文件，分片进度实时显示；默认「压缩后上传」勾选
 - **进页即有声音 + 无感自动播放**：
@@ -163,6 +182,12 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
   - 无声泄漏：`updatePlayback()` 先遍历当前 feed，把除活动视频外**所有** `<video>` `pause()`（暂停即无声，无需 mute）
   - 位置缓存：`positions` Map（视频名 → 秒）。切走前 `recordActivePosition()` 记录；切回时若缓存存在且差距 >0.5s 则 `currentTime` 恢复（元数据未加载时用 `_pendingSeek` + `loadedmetadata` 事件延迟 seek）；`loadFeed()` 清空缓存
   - 按需缓存：`updateVideoCache()` 只对**当前活动视频**（`realIdx === activeIndex`）保留 `preload='metadata'`，其余全部 `preload='none'` + `pause()`，避免浏览器把整个 feed 都缓冲、也避免远处视频出声；hls.js 也只在活动视频上 attach（`manageHls` 用 `isActive` 而非 prev/next 窗口判断）
+
+### 播放队列 (uuid, t) 与实时 t 同步
+- `playlistWindow` 数组每个元素为 `{uuid, t}`（uuid = 视频名，t = 该视频目标播放进度）
+- 前 5 / 当前 / 后 5 共 11 格；上滑 (delta=+1) 位置 i ← 位置 i+1，索引 10 补随机；下滑反向，索引 0 补随机
+- **中间格 t 每 500ms 实时同步 `video.currentTime`**（`syncPlaylistT()` 定时器），切换时旧 t 自然随位移带走
+- "t" 字段既是位置缓存，也是切换时的恢复目标
 
 ### 纵向无尽头滚动（3 副本 + 隐形回绕）
 - `FEED_COPIES=3` DOM 副本存放 `playlistWindow` 渲染（11 × 3 = 33 格）
@@ -175,32 +200,34 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 ## HLS 流式播放（已实现，详见 `logs/agent_tui.summary.md`）
 
 > 2026-08-02 上午的三轮交互从 0 到 1 完成了 HLS 流式播放的实现；
-> 实施方案整理在 `logs/agent_tui.summary.md` 末尾「最后 3 轮对话总结」。
+> 2026-08-09/10 又经两轮迭代：段大小 50 MiB → **4 MiB** + hls.js `maxBufferLength: 120` + 启动脚本固化 + ffprobe 根因修复。
 > 关键要点摘录如下：
 
 ### 目标
-- 服务端用 ffmpeg 为每个视频生成 HLS 流（`m3u8` + 4 秒 `.ts` 分片，VOD 模式）
+- 服务端用 ffmpeg 为每个视频生成 HLS 流（`m3u8` + 约 4 MiB 字节切 `.ts` 分片，VOD 模式）
 - 前端用 hls.js（Chrome/Firefox）或原生 HLS（Safari）播放 m3u8
 - 保留全部现有 OBS 上传/下载/list 接口
-- 自动/惰性生成：**首启动补齐 + 上传/删除/压缩钩子 + 启动后台 sweep**，无任何手动按钮
+- 自动/惰性生成：**首启动补齐（启动脚本触发）+ 上传/删除/压缩钩子**，无任何手动按钮
 
-### 路由（参考已丢的 `025b07f` 设计）
+### 路由
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/hls/:name/index.m3u8` | GET | 惰性生成 + Range；存在则直返 m3u8 |
-| `/hls/:name/seg-NNNNN.ts` | GET | 严格正则防穿越 + Range |
-| ~~`/hls/:name/generate`~~ | ~~POST~~ | **已移除**——全自动无手动触发 |
+| `/hls/:name/index.m3u8` | GET / HEAD | 惰性生成 + Range；存在则直返 m3u8 |
+| `/hls/:name/seg-NNNNN.ts` | GET / HEAD | 严格正则防穿越 + Range |
+| `/hls/generate-all` | POST | **手动兜底**端点：扫描 `obs/`，对所有未就绪或过期资产串行后台补齐 HLS（幂等；启动脚本固化调用） |
 
 ### 关键 ffmpeg 参数
-- **段大小按字节切（最新）**：`ffmpeg -i input -c copy -f hls -hls_segment_size 52428800 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（每段目标 50 MiB，GOP 对齐；ffmpeg 5.1.9+ 原生支持 `-hls_segment_size`，比 `-hls_time` 切段大很多）
+- **段大小按字节切**：`ffmpeg -i input -c copy -f hls -hls_segment_size 4194304 -hls_list_size 0 -hls_playlist_type vod -hls_segment_filename seg-%05d.ts index.m3u8`（**每段目标 4 MiB**，GOP 对齐；与 B 站/YouTube 同水平；曾用 50 MiB 太粗，首屏缓冲 10+ 秒、内存尖刺）
 - 无旋转 / h264 + aac/mp3 / `.mp4` 或 `.m4v` 容器 → `-c copy` **快速 remux，无损**
 - 有旋转 / webm/vp9 / **`.mov` 或 `.mkv`** → 必须 `-c:v libx264 -c:a aac` 重编码
 - `cwd` 设为 HLS 临时目录，分片名用相对路径
+- **超时**：`HLS_TIMEOUT_MS = 600 * 1000`（10 分钟上限），超大视频超时被杀
 
 ### 旋转 90° 根因与修复（核心 debug insight）
 - **根因**：iPhone 拍摄的 `.mov` 通常带 Display Matrix（`stream_side_data.rotation = -90`）；`-c copy` remux 写到 TS 的 SEI 里，**hls.js/MSE 不解析 SEI**，原始像素按 1920x1440 横屏播出 → 看起来旋转 90°
 - **检测**：`detectRotation(filePath)` 用 ffprobe 读 `stream_tags.rotate` 或 `side_data_list[].rotation`，归一化为 0/90/180/270
 - **修复**：`canRemux(srcPath, codecs, rotation)` 在 `rotation !== 0` 时返回 false，强制走重编码 —— ffmpeg 默认解码阶段就自动转正，输出 1440x1920 竖屏，无旋转副作用数据
+- **环境依赖根因**：曾因容器内缺 `ffprobe` 导致 `detectRotation` ENOENT silent skip，所有"老 mp4"都走 `-c copy` 快速路径但无旋转检查，**首屏点击就走直连 mp4**。修复：`apt-get install -y ffmpeg` 同时装上 ffprobe 5.1.9（ffmpeg 包内自带）
 
 ### `.mov` 播放不流畅
 - QuickTime 容器常见问题：moov atom 不在头部（`-c copy` 输出仍是 non-faststart），codec tag 写法不标准；hls.js/MSE 读 TS 时遇到这些问题会卡顿
@@ -208,13 +235,17 @@ curl -s -m 3 http://localhost:8082/health >/dev/null 2>&1 \
 - 前端 `<source type="video/quicktime">` 让浏览器原生支持 mov 直接播放（HLS 生成中或失败时的 fallback）
 
 ### 全自动 + meta.json 版本
-- `HLS_GEN_VERSION = 3`（每次特性变更 +1，让所有资产自动重生成）
+- `HLS_GEN_VERSION` 每次特性变更 +1（让所有资产自动重生成）
 - 每个 `hls/<name>/meta.json` 存 `{version, size, mtime, rotation}`
 - `hlsExists(name)` 校验：`index.m3u8` 存在 + `meta.version === HLS_GEN_VERSION` + `meta.size === srcSize`
 - 启动时 `setImmediate` 扫描全部视频，缺失/过期者后台补齐
-- **每日 UTC+8 05:00 cron**（server.js 进程内 `setInterval` 30 s 粒度，`lastCronKey` 防重入）：用 `Intl.DateTimeFormat({timeZone:'Asia/Shanghai'})` 在 UTC+8 时区判定小时分钟和日期 key，不污染全局 TZ；扫描 obs/，对没有当前版本 HLS 的视频后台补齐（容器无 crontab；进程内定时与 `user_start.sh` 重启同寿命）
+- **启动脚本固化**：`user_start.sh` 在 `/health` 就绪后主动 `curl -sf -X POST http://127.0.0.1:8082/hls/generate-all`，让首屏点击就走分片播放（不再依赖惰性生成，避免首卡）
 - 路径：`hls/` 顶层独立目录（与 `obs/` 平级），不污染 `obs/`
 - `.gitignore` 需包含 `hls/`
+
+### hls.js 配置
+- `maxBufferLength: 120`（秒，约 30 段 ≈ 120 MB 缓冲，远大于 4 MiB 段大小匹配，避免过早追不上播放）
+- 默认值 30 太短：播放器预读不足、追不上进度 → 卡顿
 
 ### 播放优先级（hls > obs）
 - `<video>` 用 `<source>` 列表：第一个是 `/hls/<name>/index.m3u8`（`application/vnd.apple.mpegurl`，仅当 `v.hlsReady === true`），第二个是 `/obs/<name>`（按扩展名给正确 mime）
@@ -270,7 +301,9 @@ git log --format="%h %s" -1 >> logs/commit.txt
 - [ ] 路径穿越 `..%2F` → 404
 - [ ] `node --check server.js public/app.js` 语法通过
 - [ ] 前端三页 translateX 切换 + 中间抖音式纵向翻页（手跟踪 + 吸附 + wheel）+ 三页同步播放（`logs/run.log` 无报错）
-- [ ] **永不静音**：进任意页拖拽滑动 → leader 始终有声音；侧页 3 倍速（页 0 倒退 / 页 2 前进）；位置缓存工作（离开再回来续播）
+- [ ] **永不静音**：进任意页拖拽滑动 → leader 始终有声音；侧页 8 倍速（页 0 倒退 / 页 2 前进）；位置缓存工作（离开再回来续播）
 - [ ] 播放窗口 WINDOW_SIZE=11（`window._playlistWindow.length === 11`），空缺 Fisher–Yates 随机填充
 - [ ] 横向翻页阈值视口自适应（1280 时 ≈ 448），方向锁定后斜向不再误翻页
+- [ ] **HLS 全自动**：`POST /hls/generate-all` 触发后所有 `obs/` 中视频的 `hlsReady` 全部变 `true`；`/hls/<name>/index.m3u8` + `seg-*.ts` 在 `hls/` 下独立存在；段大小约 4 MiB；hls.js `maxBufferLength=120`
+- [ ] **启动脚本固化 HLS**：`./user_start.sh` → `/health` 就绪后自动 `POST /hls/generate-all`，`logs/start.log` 有记录
 - [ ] `logs/run.log` 有运行输出
