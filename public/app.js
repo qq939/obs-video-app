@@ -483,8 +483,9 @@
         recordActivePosition();
         shiftWindow(delta);
         playing = autoplay;
-        loadVideoForIndex(2);  // 中央格 = 新的当前播放 entry（已被 shiftWindow 推到 playlistWindow[2]）
-        _videoFadeIn();          // 新视频渐入动画（与纵向滚动吸附同步播放）
+        // 翻页动画（300ms）：旧视频翻出 → 切换 src → 新视频从另一侧翻入。
+        // 视频源切换由 _videoFlipPage 内部负责（80ms 后），不要在这里预加载。
+        _videoFlipPage(delta);
         updateInfo();
         updatePlayback();
         // 5 格重新平移 + 单端补新随机 → 必须重渲染 strip，不能只调 updatePlaylistStripActive
@@ -561,9 +562,10 @@
                 const steps = targetIdx - 2;
                 recordActivePosition();
                 _shiftWindowBySteps(steps);
-                loadVideoForIndex(2);
-                _videoFadeIn();
-                updateInfo();
+                // 翻页动画：steps ≠ 0 时按方向翻一次（即便 |steps|>1 也只翻 1 张卡片，
+                // 用户能从 playlistWindow 列表里看到 playlistWindow[2] 的变化幅度）
+                if (steps !== 0) _videoFlipPage(steps);
+                else updateInfo();
                 updatePlayback();
                 renderPlaylistStrip();
             });
@@ -630,15 +632,55 @@
         playlistStrip.scrollBy({ top: offset, behavior: 'smooth' });
     }
 
-    // 切源时给视频加 .video-fading 让透明度 0 + 微下移，
-    // 一帧后移除 → CSS transition 把视频带回原位（"跟手"渐入）
-    function _videoFadeIn() {
-        videoContainer.classList.add('video-fading');
-        // 双 rAF 确保先渲染一帧初始态（opacity:0）再切到目标态（opacity:1），
-        // 浏览器才能触发 CSS transition
-        requestAnimationFrame(() => requestAnimationFrame(() => {
-            videoContainer.classList.remove('video-fading');
-        }));
+    // 切源时翻页动画（仅动 video 元素一次，300ms）：
+    //   - delta > 0（上滑切下一个）：旧视频 translateY(-100%) + opacity 0 翻出，
+    //     新视频从 translateY(100%) 翻入到 0
+    //   - delta < 0（下滑切上一个）：旧视频 translateY(100%) + opacity 0 翻出，
+    //     新视频从 translateY(-100%) 翻入到 0
+    // 翻页动画等价于"翻了一张卡片"——用户能从单次翻页清楚看到"翻了一页"。
+    // 连击 N 次 = 翻 N 张卡片；队列机制让连击动画连贯（不会中断正在进行的那一次）。
+    let _flipNextTid = null;
+    let _flipDoneTid = null;
+    let _flipQueue = [];
+    function _videoFlipPage(delta) {
+        if (!delta) return;
+        // 累积到队列：每次切源都入队，调度器逐个执行
+        _flipQueue.push(delta);
+        if (_flipNextTid) return;  // 已有动画在跑，新入队的等下一次启动
+        _flipNextTid = setTimeout(() => { _flipNextTid = null; _flipPageStep(); }, 0);
+    }
+
+    // 执行一次完整的翻页动画（300ms）
+    function _flipPageStep() {
+        const delta = _flipQueue.shift();
+        if (!delta) return;
+
+        const dir = delta > 0 ? 'up' : 'down';
+        // 1) 旧视频翻出（video 元素本身 translateY 翻出 + opacity 0）
+        videoContainer.classList.remove('is-flip-up', 'is-flip-down', 'is-flip-pre-up', 'is-flip-pre-down', 'is-flipping-in');
+        videoContainer.classList.add('is-flip-' + dir);
+
+        // 2) 视频源切换在 80ms 后触发（旧视频已开始翻出，视觉上看起来是同一张翻页）
+        setTimeout(() => {
+            loadVideoForIndex(2);
+            // 3) 切到新视频后立即把 videoContainer 放到另一侧（屏幕外），下一帧翻入
+            videoContainer.classList.remove('is-flip-up', 'is-flip-down');
+            videoContainer.classList.add('is-flip-pre-' + dir);
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                videoContainer.classList.remove('is-flip-pre-up', 'is-flip-pre-down');
+                videoContainer.classList.add('is-flipping-in');
+            }));
+        }, 80);
+
+        // 4) 收尾（380ms）：清理动画 class；继续队列里下一个
+        _flipDoneTid = setTimeout(() => {
+            videoContainer.classList.remove('is-flip-up', 'is-flip-down', 'is-flip-pre-up', 'is-flip-pre-down', 'is-flipping-in');
+            _flipDoneTid = null;
+            if (_flipQueue.length > 0) {
+                // 队列里还有，继续翻下一页
+                _flipPageStep();
+            }
+        }, 380);
     }
 
     // ---------------------------------------------------------------- single video player
@@ -905,12 +947,17 @@
         vertAnimateTo(newTop, delta);
     }
 
-    // 平滑吸附动画：rAF + easeOutCubic，结束时调用 applyIndex
+    // 平滑吸附动画：rAF + easeOutCubic，结束时仅做清理（已立即调用 applyIndex 启动翻页）
     function vertAnimateTo(top, delta) {
         const feed = feeds[1];
         cancelVertAnim();
         let from = feed.scrollTop;
-        if (Math.abs(from - top) < 1) { if (delta) applyIndex(delta); return; }
+        if (Math.abs(from - top) < 1) {
+            if (delta) applyIndex(delta);
+            return;
+        }
+        // 立即启动 playlistWindow 切换 + 视频翻页动画（与滚动动画并行）
+        if (delta) applyIndex(delta);
         feed.scrollTop = from + (top - from) * 0.02;
         from = feed.scrollTop;
         const dur = 320;   // 320ms + easeOutCubic：起步快收尾缓，跟手感强；太快像跳，太慢像拖泥带水
@@ -924,12 +971,10 @@
             if (t < 1) {
                 vertAnim.raf = requestAnimationFrame(step);
             } else {
-                const d = vertAnim.delta;
                 vertAnim = null;
                 feed._progScrollUntil = Date.now() + 120;
                 feed.scrollTop = MIDDLE_CURRENT_TOP * feed.clientHeight;
                 vertBaseTop = feed.scrollTop;   // 吸附结束后刷新基线，键盘/滚轮可以继续累加
-                if (d) applyIndex(d);
             }
         };
         vertAnim.raf = requestAnimationFrame(step);
@@ -945,6 +990,13 @@
         const h = Math.max(1, feeds[1].clientHeight);
         vertAnimateTo(vertBaseTop - dir * h, dir);
     }, { passive: false });
+
+    // 切换播放/暂停：点击视频、空格键共用
+    function togglePlayPause() {
+        if (videos.length === 0) return;
+        playing = !playing;
+        updatePlayback();
+    }
 
     // Treat tap on a side-panel page as "go back to main"
     function handleTap(e) {
@@ -964,9 +1016,7 @@
             clearTimeout(longPressTimer);
             longPressTimer = null;
         }
-        if (videos.length === 0) return;
-        playing = !playing;
-        updatePlayback();
+        togglePlayPause();
     }
 
     // ---- Touch ----
@@ -1162,6 +1212,12 @@
                 if (currentPage <= 0) return;
                 e.preventDefault();
                 setPage(currentPage - 1);
+                break;
+            case ' ':
+            case 'Space':
+                // 空格 = 播放/暂停（与点击视频共用 togglePlayPause）
+                e.preventDefault();
+                togglePlayPause();
                 break;
         }
     });
