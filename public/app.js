@@ -398,13 +398,12 @@
                 if (video.currentTime <= 0) video.pause();
             }, 100);
         } else if (currentPage === 2) {
-            // 第三页（设置页）：默认 3x 播放，长按 5x 覆盖
-            video.playbackRate = fastSpeed ? 5 : 3;
+            // 第三页（设置页）：默认 2x 播放，长按 5x 覆盖
+            video.playbackRate = fastSpeed ? 5 : 2;
         } else {
             // 第二页（主视频页）：默认 1x 播放，长按 5x 覆盖
             video.playbackRate = fastSpeed ? 5 : 1;
         }
-        updatePlayback();
     }
 
     // ---------------------------------------------------------------- render feed (placeholder items only — NO video elements)
