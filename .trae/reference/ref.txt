@@ -1,0 +1,17 @@
+# 参考地址 / 接口文档
+
+## 本次任务参考
+- https://github.com/qq939/obs.git （OBS 对象存储服务，FastAPI）
+
+## 特性分析（杂糅到 obs-video-app 的 /obs 接口）
+- GET / 首页：列出 obs 目录全部文件，支持按时间/扩展名排序，含删除按钮
+- 下载：相对路径 /{filename}，直接返回文件内容
+- 上传：PUT /{filename} 分片追加 + POST /upload/init 可恢复上传（sha256 秒传）
+- 删除：DELETE /{filename}
+- 扩展：WebSocket 公告板 /notice、save_notice 落盘
+
+## 落地到本项目的实现
+- server.js 新增 GET /obs 文件管理 HTML 页（列出全部文件 + 下载 + 上传 + 删除）
+- 下载走 GET /obs/<name>?download=1，带 Content-Disposition: attachment（RFC 5987 中文名）
+- 上传复用现有 PUT /upload/<name> 简单流式上传
+- 删除复用现有 DELETE /obs/<name>

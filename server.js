@@ -85,6 +85,33 @@ function sendText(res, status, text) {
     res.end(text);
 }
 
+function sendHtml(res, html) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': Buffer.byteLength(html) });
+    res.end(html);
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+/** 生成下载响应头：RFC 5987 编码中文文件名，强制浏览器下载。 */
+function contentDisposition(name) {
+    const fallback = String(name).replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+    const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) =>
+        '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+function formatBytes(n) {
+    if (!Number.isFinite(n) || n < 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let i = 0, v = n;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+    return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+}
+
 function readBody(req, limit = 10 * 1024 * 1024) {
     return new Promise((resolve, reject) => {
         const chunks = [];
@@ -567,10 +594,11 @@ async function completeUpload(uploadId) {
 
 // -------------------------------------------------------------- HTTP range
 
-function streamFileWithRange(res, filePath, rangeHeader) {
+function streamFileWithRange(res, filePath, rangeHeader, downloadName) {
     const stat = fs.statSync(filePath);
     const total = stat.size;
     const mime = MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream';
+    const disp = downloadName ? contentDisposition(downloadName) : null;
 
     let start = 0;
     let end = total - 1;
@@ -589,7 +617,8 @@ function streamFileWithRange(res, filePath, rangeHeader) {
             if (start >= total || start > end) {
                 res.writeHead(416, {
                     'Content-Range': `bytes */${total}`,
-                    'Content-Type': mime
+                    'Content-Type': mime,
+                    ...(disp ? { 'Content-Disposition': disp } : {})
                 });
                 res.end();
                 return;
@@ -600,24 +629,131 @@ function streamFileWithRange(res, filePath, rangeHeader) {
                 'Accept-Ranges': 'bytes',
                 'Content-Length': end - start + 1,
                 'Content-Type': mime,
-                'Cache-Control': 'no-cache'
+                'Cache-Control': 'no-cache',
+                ...(disp ? { 'Content-Disposition': disp } : {})
             });
         } else {
             res.writeHead(200, {
                 'Content-Length': total,
                 'Content-Type': mime,
-                'Accept-Ranges': 'bytes'
+                'Accept-Ranges': 'bytes',
+                ...(disp ? { 'Content-Disposition': disp } : {})
             });
         }
     } else {
         res.writeHead(200, {
             'Content-Length': total,
             'Content-Type': mime,
-            'Accept-Ranges': 'bytes'
+            'Accept-Ranges': 'bytes',
+            ...(disp ? { 'Content-Disposition': disp } : {})
         });
     }
 
     fs.createReadStream(filePath, { start, end }).pipe(res);
+}
+
+// ------------------------------------------------------------ file manager /obs
+
+/** 列出 obs/ 目录下全部文件（排除隐藏文件与目录），返回 name/size/mtime。 */
+function listAllFiles() {
+    if (!fs.existsSync(OBS_DIR)) return [];
+    return fs.readdirSync(OBS_DIR)
+        .filter((f) => !f.startsWith('.'))
+        .map((name) => {
+            const full = path.join(OBS_DIR, name);
+            let stat;
+            try { stat = fs.statSync(full); } catch (e) { return null; }
+            if (!stat.isFile()) return null;
+            return { name, size: stat.size, mtime: stat.mtimeMs };
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.mtime - a.mtime);
+}
+
+/** GET /obs：文件管理 HTML 页面，展示全部文件 + 下载（相对路径）+ 上传 + 删除。 */
+function sendObsPage(res) {
+    const files = listAllFiles();
+    const rows = files.map((f) => {
+        const dl = `/obs/${encodeURIComponent(f.name)}?download=1`;
+        const mtime = new Date(f.mtime).toISOString().replace('T', ' ').substring(0, 19);
+        const ext = path.extname(f.name).toLowerCase() || '(无扩展名)';
+        return `<li>
+            <span class="fname"><a href="${escapeHtml(dl)}" download>${escapeHtml(f.name)}</a></span>
+            <span class="fmeta">${escapeHtml(formatBytes(f.size))} · ${escapeHtml(mtime)} · ${escapeHtml(ext)}</span>
+            <button class="btn-del" data-name="${escapeHtml(f.name)}" title="删除">删除</button>
+        </li>`;
+    }).join('');
+
+    const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OBS 文件管理</title>
+<style>
+    body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { color: #333; }
+    .count { color: #666; font-size: .9em; }
+    .toolbar { display: flex; align-items: center; gap: 10px; margin: 16px 0; }
+    .toolbar input[type=file] { flex: 1; }
+    .btn { padding: 8px 14px; border: none; background: #007bff; color: #fff; cursor: pointer; border-radius: 4px; }
+    .btn:hover { opacity: 0.85; }
+    .progress { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin: 8px 0; display: none; }
+    .progress > div { height: 100%; background: #007bff; width: 0; transition: width .2s; }
+    ul { list-style: none; padding: 0; }
+    li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+    a { text-decoration: none; color: #007bff; word-break: break-all; }
+    a:hover { text-decoration: underline; }
+    .fname { flex: 1; min-width: 0; }
+    .fmeta { color: #888; font-size: .85em; white-space: nowrap; }
+    .btn-del { cursor: pointer; background: none; border: none; color: #d33; }
+    .btn-del:hover { opacity: .7; }
+    .empty { color: #999; font-style: italic; }
+</style>
+</head>
+<body>
+<h1>OBS 文件管理</h1>
+<p class="count">共 ${files.length} 个文件</p>
+<div class="toolbar">
+    <input type="file" id="fileInput" multiple>
+    <button class="btn" id="uploadBtn">上传</button>
+</div>
+<div class="progress" id="progress"><div id="progressFill"></div></div>
+${files.length ? `<ul>${rows}</ul>` : '<p class="empty">暂无文件</p>'}
+<script>
+async function uploadFiles() {
+    const input = document.getElementById('fileInput');
+    const list = Array.from(input.files || []);
+    if (!list.length) { alert('请先选择文件'); return; }
+    const bar = document.getElementById('progress');
+    const fill = document.getElementById('progressFill');
+    bar.style.display = 'block';
+    for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        fill.style.width = Math.round((i / list.length) * 100) + '%';
+        try {
+            const resp = await fetch('/upload/' + encodeURIComponent(f.name), { method: 'PUT', body: f });
+            if (!resp.ok) throw new Error(resp.status + ' ' + await resp.text());
+        } catch (e) {
+            alert('上传失败: ' + f.name + ' - ' + e.message);
+        }
+    }
+    fill.style.width = '100%';
+    setTimeout(() => location.reload(), 300);
+}
+document.getElementById('uploadBtn').addEventListener('click', uploadFiles);
+document.querySelectorAll('.btn-del').forEach(btn => {
+    btn.addEventListener('click', async () => {
+        const name = btn.dataset.name;
+        if (!confirm('确定要删除 ' + name + ' 吗？')) return;
+        const resp = await fetch('/obs/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (resp.ok) location.reload(); else alert('删除失败');
+    });
+});
+</script>
+</body>
+</html>`;
+    sendHtml(res, html);
 }
 
 // ----------------------------------------------------------------- ask/claude
@@ -762,6 +898,11 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
         }
 
+        // ---- file manager page: GET /obs (exact, lists all files)
+        if (method === 'GET' && p === '/obs') {
+            return sendObsPage(res);
+        }
+
         // ---- video streaming: GET/HEAD /obs/:filename
         const obsMatch = p.match(/^\/obs\/(.+)$/);
         if ((method === 'GET' || method === 'HEAD') && obsMatch) {
@@ -782,7 +923,8 @@ const server = http.createServer(async (req, res) => {
                 });
                 return res.end();
             }
-            return streamFileWithRange(res, filePath, req.headers.range);
+            const download = url.searchParams.get('download');
+            return streamFileWithRange(res, filePath, req.headers.range, download ? filename : null);
         }
 
         // ---- video list
