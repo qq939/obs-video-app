@@ -397,10 +397,12 @@
                 video.currentTime = Math.max(0, video.currentTime - 0.5);
                 if (video.currentTime <= 0) video.pause();
             }, 100);
+        } else if (currentPage === 2) {
+            // 第三页（设置页）：默认 3x 播放，长按 5x 覆盖
+            video.playbackRate = fastSpeed ? 5 : 3;
         } else {
-            // Main page (1) and Settings page (2): 播放速度一致，取决于设置项 playbackSpeed
-            // 长按 5x 期间仍由 fastSpeed 标志覆盖为 5
-            video.playbackRate = fastSpeed ? 5 : playbackSpeed;
+            // 第二页（主视频页）：默认 1x 播放，长按 5x 覆盖
+            video.playbackRate = fastSpeed ? 5 : 1;
         }
         updatePlayback();
     }
