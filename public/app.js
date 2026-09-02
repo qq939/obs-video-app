@@ -991,6 +991,13 @@
         vertAnimateTo(vertBaseTop - dir * h, dir);
     }, { passive: false });
 
+    // 切换播放/暂停：点击视频、空格键共用
+    function togglePlayPause() {
+        if (videos.length === 0) return;
+        playing = !playing;
+        updatePlayback();
+    }
+
     // Treat tap on a side-panel page as "go back to main"
     function handleTap(e) {
         const target = e.target;
@@ -1009,9 +1016,7 @@
             clearTimeout(longPressTimer);
             longPressTimer = null;
         }
-        if (videos.length === 0) return;
-        playing = !playing;
-        updatePlayback();
+        togglePlayPause();
     }
 
     // ---- Touch ----
@@ -1207,6 +1212,12 @@
                 if (currentPage <= 0) return;
                 e.preventDefault();
                 setPage(currentPage - 1);
+                break;
+            case ' ':
+            case 'Space':
+                // 空格 = 播放/暂停（与点击视频共用 togglePlayPause）
+                e.preventDefault();
+                togglePlayPause();
                 break;
         }
     });
