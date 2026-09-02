@@ -654,103 +654,128 @@ function streamFileWithRange(res, filePath, rangeHeader, downloadName) {
 
 // ------------------------------------------------------------ file manager /obs
 
-/** 列出 obs/ 目录下全部文件（排除隐藏文件与目录），返回 name/size/mtime。 */
+// 全局排序参数（使用位置：sendObsPage 列表排序判断）
+// SORT_MODE: 文件列表排序模式，'time' 按时间倒序，'ext' 按扩展名正序
+// 使用位置：sendObsPage listAllFiles 排序逻辑
+let OBS_SORT_MODE = 'time';
+
+/** 列出 obs/ 目录下全部文件（排除隐藏文件与目录），返回 name/size/mtime。
+ * 排序规则：SORT_MODE='time' 按 mtime 倒序，SORT_MODE='ext' 按扩展名+文件名正序。 */
 function listAllFiles() {
     if (!fs.existsSync(OBS_DIR)) return [];
-    return fs.readdirSync(OBS_DIR)
-        .filter((f) => !f.startsWith('.'))
-        .map((name) => {
-            const full = path.join(OBS_DIR, name);
-            let stat;
-            try { stat = fs.statSync(full); } catch (e) { return null; }
-            if (!stat.isFile()) return null;
-            return { name, size: stat.size, mtime: stat.mtimeMs };
-        })
-        .filter(Boolean)
-        .sort((a, b) => b.mtime - a.mtime);
+    const raw = fs.readdirSync(OBS_DIR).filter((f) => !f.startsWith('.'));
+    const entries = raw.map((name) => {
+        const full = path.join(OBS_DIR, name);
+        let stat;
+        try { stat = fs.statSync(full); } catch (e) { return null; }
+        if (!stat.isFile()) return null;
+        return { name, size: stat.size, mtime: stat.mtimeMs };
+    }).filter(Boolean);
+
+    if (OBS_SORT_MODE === 'ext') {
+        entries.sort((a, b) => {
+            const extA = path.extname(a.name).toLowerCase();
+            const extB = path.extname(b.name).toLowerCase();
+            if (extA < extB) return -1;
+            if (extA > extB) return 1;
+            return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+        });
+    } else {
+        entries.sort((a, b) => b.mtime - a.mtime);
+    }
+    return entries;
 }
 
-/** GET /obs：文件管理 HTML 页面，展示全部文件 + 下载（相对路径）+ 上传 + 删除。 */
-function sendObsPage(res) {
+/** GET /obs：文件管理页面，与 obs 项目保持一致。
+ * 特性：按时间/扩展名排序、下载（相对路径）、上传（表单 POST + JS 分片）、删除。 */
+function sendObsPage(res, sortParam) {
+    if (sortParam === 'ext' || sortParam === 'time') OBS_SORT_MODE = sortParam;
     const files = listAllFiles();
     const rows = files.map((f) => {
         const dl = `/obs/${encodeURIComponent(f.name)}?download=1`;
-        const mtime = new Date(f.mtime).toISOString().replace('T', ' ').substring(0, 19);
-        const ext = path.extname(f.name).toLowerCase() || '(无扩展名)';
         return `<li>
-            <span class="fname"><a href="${escapeHtml(dl)}" download>${escapeHtml(f.name)}</a></span>
-            <span class="fmeta">${escapeHtml(formatBytes(f.size))} · ${escapeHtml(mtime)} · ${escapeHtml(ext)}</span>
-            <button class="btn-del" data-name="${escapeHtml(f.name)}" title="删除">删除</button>
+            <div class="actions">
+                <a href="${escapeHtml(dl)}">${escapeHtml(f.name)}</a>
+            </div>
+            <button class="btn-delete" onclick="deleteFile('${escapeHtml(f.name)}')" title="删除">🗑️</button>
         </li>`;
     }).join('');
 
     const html = `<!DOCTYPE html>
-<html lang="zh-CN">
+<html>
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OBS 文件管理</title>
-<style>
-    body { font-family: sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { color: #333; }
-    .count { color: #666; font-size: .9em; }
-    .toolbar { display: flex; align-items: center; gap: 10px; margin: 16px 0; }
-    .toolbar input[type=file] { flex: 1; }
-    .btn { padding: 8px 14px; border: none; background: #007bff; color: #fff; cursor: pointer; border-radius: 4px; }
-    .btn:hover { opacity: 0.85; }
-    .progress { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin: 8px 0; display: none; }
-    .progress > div { height: 100%; background: #007bff; width: 0; transition: width .2s; }
-    ul { list-style: none; padding: 0; }
-    li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-    a { text-decoration: none; color: #007bff; word-break: break-all; }
-    a:hover { text-decoration: underline; }
-    .fname { flex: 1; min-width: 0; }
-    .fmeta { color: #888; font-size: .85em; white-space: nowrap; }
-    .btn-del { cursor: pointer; background: none; border: none; color: #d33; }
-    .btn-del:hover { opacity: .7; }
-    .empty { color: #999; font-style: italic; }
-</style>
+    <meta charset="utf-8">
+    <title>文件托管服务</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+        h1 { color: #333; }
+        ul { list-style: none; padding: 0; }
+        li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        a { text-decoration: none; color: #007bff; }
+        a:hover { text-decoration: underline; }
+        .empty { color: #999; font-style: italic; }
+        .actions { display: flex; gap: 10px; }
+        .btn-delete { cursor: pointer; background: none; border: none; font-size: 1.2em; }
+        .btn-delete:hover { opacity: 0.7; }
+        .sort-controls { margin-bottom: 20px; }
+        .sort-controls a { margin-right: 15px; font-weight: bold; }
+        .sort-controls a.active { color: #333; cursor: default; text-decoration: none; }
+        .upload-form { margin: 16px 0; display: flex; gap: 8px; align-items: center; }
+        .upload-form input[type=file] { flex: 1; }
+        .upload-form button { padding: 6px 14px; cursor: pointer; }
+    </style>
 </head>
 <body>
-<h1>OBS 文件管理</h1>
-<p class="count">共 ${files.length} 个文件</p>
-<div class="toolbar">
-    <input type="file" id="fileInput" multiple>
-    <button class="btn" id="uploadBtn">上传</button>
-</div>
-<div class="progress" id="progress"><div id="progressFill"></div></div>
-${files.length ? `<ul>${rows}</ul>` : '<p class="empty">暂无文件</p>'}
-<script>
-async function uploadFiles() {
-    const input = document.getElementById('fileInput');
-    const list = Array.from(input.files || []);
-    if (!list.length) { alert('请先选择文件'); return; }
-    const bar = document.getElementById('progress');
-    const fill = document.getElementById('progressFill');
-    bar.style.display = 'block';
-    for (let i = 0; i < list.length; i++) {
-        const f = list[i];
-        fill.style.width = Math.round((i / list.length) * 100) + '%';
-        try {
-            const resp = await fetch('/upload/' + encodeURIComponent(f.name), { method: 'PUT', body: f });
-            if (!resp.ok) throw new Error(resp.status + ' ' + await resp.text());
-        } catch (e) {
-            alert('上传失败: ' + f.name + ' - ' + e.message);
+    <h1>文件托管服务</h1>
+    <div class="sort-controls">
+        <a href="/obs?sort=time" class="${OBS_SORT_MODE === 'time' ? 'active' : ''}">按时间</a>
+        <a href="/obs?sort=ext" class="${OBS_SORT_MODE === 'ext' ? 'active' : ''}">按扩展名</a>
+    </div>
+    <div class="upload-form">
+        <input type="file" id="fileInput" multiple>
+        <button onclick="chunkedUpload()">上传</button>
+    </div>
+    ${files.length ? `<ul>${rows}</ul>` : '<p class="empty">暂无文件</p>'}
+    <script>
+        const CHUNK_SIZE_BROWSER = 10 * 1024 * 1024; // 与 obs 项目一致：10MB 分片
+        async function sha256Hex(file) {
+            const buf = await file.arrayBuffer();
+            const digest = await crypto.subtle.digest("SHA-256", buf);
+            return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
         }
-    }
-    fill.style.width = '100%';
-    setTimeout(() => location.reload(), 300);
-}
-document.getElementById('uploadBtn').addEventListener('click', uploadFiles);
-document.querySelectorAll('.btn-del').forEach(btn => {
-    btn.addEventListener('click', async () => {
-        const name = btn.dataset.name;
-        if (!confirm('确定要删除 ' + name + ' 吗？')) return;
-        const resp = await fetch('/obs/' + encodeURIComponent(name), { method: 'DELETE' });
-        if (resp.ok) location.reload(); else alert('删除失败');
-    });
-});
-</script>
+        async function deleteFile(filename) {
+            if (!confirm('确定要删除 ' + filename + ' 吗？')) return;
+            const resp = await fetch('/obs/' + encodeURIComponent(filename), { method: 'DELETE' });
+            if (resp.ok) location.reload(); else alert('删除失败');
+        }
+        async function chunkedUpload() {
+            const input = document.getElementById('fileInput');
+            const file = input.files && input.files[0];
+            if (!file) { alert('请先选择文件'); return; }
+            const filename = file.name;
+            const total = file.size;
+            let offset = 0;
+            try {
+                while (offset < total) {
+                    const end = Math.min(offset + CHUNK_SIZE_BROWSER, total);
+                    const blob = file.slice(offset, end);
+                    const resp = await fetch('/upload/' + encodeURIComponent(filename), {
+                        method: 'PUT',
+                        body: await blob.arrayBuffer(),
+                    });
+                    if (resp.status !== 200) {
+                        const text = await resp.text();
+                        throw new Error('分片上传失败: ' + resp.status + ' ' + text);
+                    }
+                    offset = end;
+                }
+                alert('上传成功');
+                location.reload();
+            } catch (err) {
+                alert('上传出错: ' + err.message);
+            }
+        }
+    </script>
 </body>
 </html>`;
     sendHtml(res, html);
@@ -900,7 +925,7 @@ const server = http.createServer(async (req, res) => {
 
         // ---- file manager page: GET /obs (exact, lists all files)
         if (method === 'GET' && p === '/obs') {
-            return sendObsPage(res);
+            return sendObsPage(res, url.searchParams.get('sort'));
         }
 
         // ---- video streaming: GET/HEAD /obs/:filename
