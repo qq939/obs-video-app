@@ -895,6 +895,7 @@
         if (Math.abs(dx) < SWIPE_THRESHOLD && !fast) {
             pagesEl.style.transition = '';
             pagesEl.style.transform = '';
+            updatePlayback();  // 滑动失败也触发播放
             return false;
         }
         const target = Math.max(0, Math.min(PAGE_COUNT - 1, dx < 0 ? currentPage + 1 : currentPage - 1));
@@ -908,6 +909,7 @@
         pagesEl.style.transition = '';
         buildPageDots();
         applyPagePlayback();
+        updatePlayback();  // 滑动成功也触发播放
         return true;
     }
 
