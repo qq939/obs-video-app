@@ -1232,6 +1232,14 @@
         video._pendingSeek = undefined;
     });
 
+    // 缓冲完成后自动播放（playing=true 时才触发）
+    video.addEventListener('canplay', () => {
+        if (playing && !isNaN(video.duration)) {
+            const p = video.play();
+            if (p && p.catch) p.catch(() => {});
+        }
+    });
+
     // Seek bar drag (touch + mouse)
     let seekDragging = false;
 
