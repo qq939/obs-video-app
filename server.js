@@ -904,7 +904,10 @@ const server = http.createServer(async (req, res) => {
         // ---- simple upload: PUT /upload/:filename (streaming)
         const simpleMatch = p.match(/^\/upload\/(.+)$/);
         if (method === 'PUT' && simpleMatch) {
-            const filename = safeName(simpleMatch[1]);
+            // 解码 URL 编码，保持原始 UTF-8 文件名
+            let rawFilename = simpleMatch[1];
+            try { rawFilename = decodeURIComponent(rawFilename); } catch (_) {}
+            const filename = safeName(rawFilename);
             if (!filename) return sendJson(res, 400, { error: 'invalid filename' });
             const tmpPath = path.join(UPLOAD_DIR, `.simple-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
             await new Promise((resolve, reject) => {

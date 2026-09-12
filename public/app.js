@@ -1309,14 +1309,41 @@
     });
 
     // ---------------------------------------------------------------- upload
+    // 计算文件哈希：始终分块读取以报告进度
     async function computeFileHash(file, onProgress) {
-        if (crypto.subtle) { try { const buf = await file.arrayBuffer(); const d = await crypto.subtle.digest('SHA-256', buf); if (onProgress) onProgress(100); return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2,'0')).join(''); } catch(e) {} }
-        const ctx = createSha256(); const SLICE = 8*1024*1024; let processed = 0;
+        const SLICE = 8 * 1024 * 1024;  // 8MB per slice
+        let processed = 0;
+        let hash = null;
+
+        if (crypto.subtle && crypto.subtle.digest) {
+            // 使用 SubtleCrypto：分块读取以显示进度，最后整体计算哈希
+            try {
+                const chunks = [];
+                for (let start = 0; start < file.size; start += SLICE) {
+                    const buf = await file.slice(start, Math.min(start + SLICE, file.size)).arrayBuffer();
+                    chunks.push(new Uint8Array(buf));
+                    processed += buf.byteLength;
+                    if (onProgress) onProgress(Math.round(processed / file.size * 100));
+                }
+                // 合并所有块后计算哈希
+                const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+                const combined = new Uint8Array(totalLen);
+                let offset = 0;
+                for (const c of chunks) { combined.set(c, offset); offset += c.length; }
+                const d = await crypto.subtle.digest('SHA-256', combined);
+                return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
+            } catch (e) {
+                // fallback to manual if subtle fails
+            }
+        }
+
+        // 手动 SHA-256 分块计算
+        const ctx = createSha256();
         for (let start = 0; start < file.size; start += SLICE) {
-            const buf = await file.slice(start, Math.min(file.size, start+SLICE)).arrayBuffer();
+            const buf = await file.slice(start, Math.min(start + SLICE, file.size)).arrayBuffer();
             ctx.update(new Uint8Array(buf));
             processed += buf.byteLength;
-            if (onProgress) onProgress(Math.round(processed/file.size*100));
+            if (onProgress) onProgress(Math.round(processed / file.size * 100));
         }
         return ctx.digestHex();
     }
