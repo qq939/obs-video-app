@@ -693,88 +693,148 @@ function sendObsPage(res, sortParam) {
     const files = listAllFiles();
     const rows = files.map((f) => {
         const dl = `/obs/${encodeURIComponent(f.name)}?download=1`;
-        return `<li>
-            <div class="actions">
-                <a href="${escapeHtml(dl)}">${escapeHtml(f.name)}</a>
+        const sizeStr = formatBytes(f.size);
+        const icon = f.name.match(/\.(mp4|webm|mov|m4v|mkv)$/i) ? '🎬' : '📄';
+        return `<div class="file-item">
+            <div class="file-icon">${icon}</div>
+            <div class="file-info">
+                <div class="file-name">${escapeHtml(f.name)}</div>
+                <div class="file-meta">${sizeStr}</div>
             </div>
-            <button class="btn-delete" onclick="deleteFile('${escapeHtml(f.name)}')" title="删除">🗑️</button>
-        </li>`;
+            <div class="file-actions">
+                <a href="${escapeHtml(dl)}">下载</a>
+                <button class="delete-btn" onclick="deleteFile('${escapeHtml(f.name.replace(/'/g, "\\'"))}')">删除</button>
+            </div>
+        </div>`;
     }).join('');
 
     const html = `<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>文件托管服务</title>
+    <title>文件管理</title>
     <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
-        h1 { color: #333; }
-        ul { list-style: none; padding: 0; }
-        li { padding: 10px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-        a { text-decoration: none; color: #007bff; }
-        a:hover { text-decoration: underline; }
-        .empty { color: #999; font-style: italic; }
-        .actions { display: flex; gap: 10px; }
-        .btn-delete { cursor: pointer; background: none; border: none; font-size: 1.2em; }
-        .btn-delete:hover { opacity: 0.7; }
-        .sort-controls { margin-bottom: 20px; }
-        .sort-controls a { margin-right: 15px; font-weight: bold; }
-        .sort-controls a.active { color: #333; cursor: default; text-decoration: none; }
-        .upload-form { margin: 16px 0; display: flex; gap: 8px; align-items: center; }
-        .upload-form input[type=file] { flex: 1; }
-        .upload-form button { padding: 6px 14px; cursor: pointer; }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        h1 { font-size: 24px; font-weight: 600; margin-bottom: 20px; color: #fff; }
+        .top-bar { display: flex; gap: 16px; align-items: center; margin-bottom: 24px; flex-wrap: wrap; }
+        .upload-area { flex: 1; min-width: 300px; }
+        .upload-area input[type=file] { display: none; }
+        .upload-btn { display: inline-flex; align-items: center; gap: 8px; padding: 14px 28px; background: #e94560; color: #fff; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+        .upload-btn:hover { background: #ff6b6b; transform: translateY(-1px); }
+        .sort-controls { display: flex; gap: 8px; }
+        .sort-controls a { padding: 10px 18px; background: #16213e; color: #aaa; text-decoration: none; border-radius: 8px; font-size: 14px; transition: all 0.2s; }
+        .sort-controls a:hover { background: #0f3460; color: #fff; }
+        .sort-controls a.active { background: #0f3460; color: #e94560; }
+        .file-list { display: grid; gap: 12px; }
+        .file-item { display: flex; align-items: center; padding: 16px 20px; background: #16213e; border-radius: 12px; transition: all 0.2s; }
+        .file-item:hover { background: #1f2b47; transform: translateX(4px); }
+        .file-icon { font-size: 28px; margin-right: 16px; }
+        .file-info { flex: 1; min-width: 0; }
+        .file-name { font-size: 15px; font-weight: 500; word-break: break-all; color: #fff; }
+        .file-meta { font-size: 12px; color: #888; margin-top: 4px; }
+        .file-actions { display: flex; gap: 8px; }
+        .file-actions a, .file-actions button { padding: 8px 14px; background: #0f3460; color: #fff; text-decoration: none; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; transition: all 0.2s; }
+        .file-actions a:hover, .file-actions button:hover { background: #e94560; }
+        .file-actions .delete-btn { background: #dc3545; }
+        .file-actions .delete-btn:hover { background: #ff4757; }
+        .empty { text-align: center; padding: 60px 20px; color: #666; }
+        .empty-icon { font-size: 64px; margin-bottom: 16px; }
+        /* Upload progress */
+        .upload-progress { display: none; margin-top: 16px; }
+        .upload-progress.active { display: block; }
+        .progress-bar { height: 8px; background: #16213e; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #e94560, #ff6b6b); width: 0%; transition: width 0.3s; }
+        .progress-text { font-size: 14px; color: #888; margin-top: 8px; }
     </style>
 </head>
 <body>
-    <h1>文件托管服务</h1>
-    <div class="sort-controls">
-        <a href="/obs?sort=time" class="${OBS_SORT_MODE === 'time' ? 'active' : ''}">按时间</a>
-        <a href="/obs?sort=ext" class="${OBS_SORT_MODE === 'ext' ? 'active' : ''}">按扩展名</a>
+    <div class="container">
+        <h1>📁 文件管理</h1>
+        <div class="top-bar">
+            <div class="upload-area">
+                <input type="file" id="fileInput" multiple>
+                <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
+                    ⬆ 上传文件
+                </button>
+                <div class="upload-progress" id="uploadProgress">
+                    <div class="progress-text" id="progressText">准备上传...</div>
+                    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+                </div>
+            </div>
+            <div class="sort-controls">
+                <a href="/obs?sort=time" class="${OBS_SORT_MODE === 'time' ? 'active' : ''}">按时间</a>
+                <a href="/obs?sort=ext" class="${OBS_SORT_MODE === 'ext' ? 'active' : ''}">按扩展名</a>
+            </div>
+        </div>
+        ${files.length ? `<div class="file-list">${rows}</div>` : '<div class="empty"><div class="empty-icon">📂</div><p>暂无文件</p></div>'}
     </div>
-    <div class="upload-form">
-        <input type="file" id="fileInput" multiple>
-        <button onclick="chunkedUpload()">上传</button>
-    </div>
-    ${files.length ? `<ul>${rows}</ul>` : '<p class="empty">暂无文件</p>'}
     <script>
-        const CHUNK_SIZE_BROWSER = 10 * 1024 * 1024; // 与 obs 项目一致：10MB 分片
-        async function sha256Hex(file) {
-            const buf = await file.arrayBuffer();
-            const digest = await crypto.subtle.digest("SHA-256", buf);
-            return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, "0")).join("");
-        }
+        const CHUNK_SIZE = 10 * 1024 * 1024; // 10MB chunks
+        
         async function deleteFile(filename) {
             if (!confirm('确定要删除 ' + filename + ' 吗？')) return;
             const resp = await fetch('/obs/' + encodeURIComponent(filename), { method: 'DELETE' });
             if (resp.ok) location.reload(); else alert('删除失败');
         }
-        async function chunkedUpload() {
-            const input = document.getElementById('fileInput');
-            const file = input.files && input.files[0];
-            if (!file) { alert('请先选择文件'); return; }
+        
+        function showProgress(pct, text) {
+            const el = document.getElementById('uploadProgress');
+            el.classList.add('active');
+            document.getElementById('progressFill').style.width = pct + '%';
+            document.getElementById('progressText').textContent = text;
+        }
+        
+        function hideProgress() {
+            document.getElementById('uploadProgress').classList.remove('active');
+        }
+        
+        async function uploadFile(file) {
             const filename = file.name;
             const total = file.size;
             let offset = 0;
+            const totalChunks = Math.ceil(total / CHUNK_SIZE);
+            
             try {
                 while (offset < total) {
-                    const end = Math.min(offset + CHUNK_SIZE_BROWSER, total);
+                    const end = Math.min(offset + CHUNK_SIZE, total);
+                    const pct = Math.round(offset / total * 100);
+                    showProgress(pct, '上传中 ' + pct + '% (' + Math.ceil(offset / CHUNK_SIZE) + '/' + totalChunks + ' 分片)');
+                    
                     const blob = file.slice(offset, end);
                     const resp = await fetch('/upload/' + encodeURIComponent(filename), {
                         method: 'PUT',
                         body: await blob.arrayBuffer(),
                     });
+                    
                     if (resp.status !== 200) {
                         const text = await resp.text();
-                        throw new Error('分片上传失败: ' + resp.status + ' ' + text);
+                        throw new Error('上传失败: ' + resp.status + ' ' + text);
                     }
                     offset = end;
                 }
-                alert('上传成功');
-                location.reload();
+                showProgress(100, '上传完成！');
+                setTimeout(() => { hideProgress(); location.reload(); }, 1000);
             } catch (err) {
+                hideProgress();
                 alert('上传出错: ' + err.message);
             }
         }
+        
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+            
+            // Upload files sequentially
+            (function uploadNext(i) {
+                if (i >= files.length) return;
+                uploadFile(files[i]).then(() => uploadNext(i + 1));
+            })(0);
+            
+            // Reset input for next selection
+            e.target.value = '';
+        });
     </script>
 </body>
 </html>`;
