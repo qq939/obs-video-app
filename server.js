@@ -791,31 +791,35 @@ function sendObsPage(res, sortParam) {
         }
         
         async function uploadFile(file) {
-            const filename = file.name;
-            const total = file.size;
-            let offset = 0;
-            const totalChunks = Math.ceil(total / CHUNK_SIZE);
+            var filename = file.name;
+            var total = file.size;
+            var offset = 0;
+            var totalChunks = Math.ceil(total / CHUNK_SIZE);
             
             try {
                 while (offset < total) {
-                    const end = Math.min(offset + CHUNK_SIZE, total);
-                    const pct = Math.round(offset / total * 100);
+                    var end = Math.min(offset + CHUNK_SIZE, total) - 1;
+                    var pct = Math.round(offset / total * 100);
                     showProgress(pct, '上传中 ' + pct + '% (' + Math.ceil(offset / CHUNK_SIZE) + '/' + totalChunks + ' 分片)');
                     
-                    const blob = file.slice(offset, end);
-                    const resp = await fetch('/upload/' + encodeURIComponent(filename), {
+                    var blob = file.slice(offset, end + 1);
+                    var resp = await fetch('/upload/' + encodeURIComponent(filename), {
                         method: 'PUT',
-                        body: await blob.arrayBuffer(),
+                        headers: {
+                            'Content-Range': 'bytes ' + offset + '-' + end + '/' + total,
+                            'Content-Type': 'application/octet-stream'
+                        },
+                        body: await blob.arrayBuffer()
                     });
                     
                     if (resp.status !== 200) {
-                        const text = await resp.text();
+                        var text = await resp.text();
                         throw new Error('上传失败: ' + resp.status + ' ' + text);
                     }
-                    offset = end;
+                    offset = end + 1;
                 }
                 showProgress(100, '上传完成！');
-                setTimeout(() => { hideProgress(); location.reload(); }, 1000);
+                setTimeout(function() { hideProgress(); location.reload(); }, 1000);
             } catch (err) {
                 hideProgress();
                 alert('上传出错: ' + err.message);
@@ -961,7 +965,7 @@ const server = http.createServer(async (req, res) => {
             return sendJson(res, 200, result);
         }
 
-        // ---- simple upload: PUT /upload/:filename (streaming)
+        // ---- simple upload: PUT /upload/:filename (streaming, 支持分片追加)
         const simpleMatch = p.match(/^\/upload\/(.+)$/);
         if (method === 'PUT' && simpleMatch) {
             // 解码 URL 编码，保持原始 UTF-8 文件名
@@ -969,18 +973,46 @@ const server = http.createServer(async (req, res) => {
             try { rawFilename = decodeURIComponent(rawFilename); } catch (_) {}
             const filename = safeName(rawFilename);
             if (!filename) return sendJson(res, 400, { error: 'invalid filename' });
+            
+            // 检查 Content-Range 头判断是覆盖还是追加
+            const contentRange = req.headers['content-range'];
+            const destPath = path.join(OBS_DIR, filename);
+            
+            if (contentRange) {
+                // 分片上传：追加模式
+                // Content-Range: bytes <start>-<end>/<total>
+                const match = contentRange.match(/bytes (\d+)-(\d+)\/(\d+)/);
+                if (match) {
+                    const start = parseInt(match[1], 10);
+                    // 如果不是从0开始，说明是追加，需要先读取现有文件
+                    if (start > 0 && fs.existsSync(destPath)) {
+                        const existing = fs.readFileSync(destPath);
+                        const appendData = await readBody(req, 200 * 1024 * 1024);
+                        const newData = Buffer.concat([existing, appendData]);
+                        fs.writeFileSync(destPath, newData);
+                    } else {
+                        // 从0开始或文件不存在，直接写入
+                        const buf = await readBody(req, 200 * 1024 * 1024);
+                        fs.writeFileSync(destPath, buf);
+                    }
+                    const size = fs.statSync(destPath).size;
+                    logLine(`simple upload (append): ${filename} (${size} bytes)`);
+                    generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
+                    return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
+                }
+            }
+            
+            // 普通上传：覆盖模式（无 Content-Range）
             const tmpPath = path.join(UPLOAD_DIR, `.simple-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`);
             await new Promise((resolve, reject) => {
                 const ws = fs.createWriteStream(tmpPath);
                 req.pipe(ws);
                 req.on('error', reject);
                 ws.on('error', reject);
-                // Wait for the stream to fully flush to disk before renaming,
-                // otherwise the rename/stat can race with the in-flight write.
                 ws.on('finish', resolve);
             });
-            fs.renameSync(tmpPath, path.join(OBS_DIR, filename));
-            const size = fs.statSync(path.join(OBS_DIR, filename)).size;
+            fs.renameSync(tmpPath, destPath);
+            const size = fs.statSync(destPath).size;
             logLine(`simple upload: ${filename} (${size} bytes)`);
             generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
             return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
