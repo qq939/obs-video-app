@@ -984,19 +984,24 @@ const server = http.createServer(async (req, res) => {
                 const match = contentRange.match(/bytes (\d+)-(\d+)\/(\d+)/);
                 if (match) {
                     const start = parseInt(match[1], 10);
-                    // 如果不是从0开始，说明是追加，需要先读取现有文件
+                    const endPos = parseInt(match[2], 10);
+                    const totalSize = parseInt(match[3], 10);
+                    
+                    // 如果 start=0，说明是新上传（覆盖），直接写入
+                    // 如果 start>0 且文件存在，说明是追加
                     if (start > 0 && fs.existsSync(destPath)) {
+                        // 追加：读取现有文件 + 追加数据
                         const existing = fs.readFileSync(destPath);
                         const appendData = await readBody(req, 200 * 1024 * 1024);
                         const newData = Buffer.concat([existing, appendData]);
                         fs.writeFileSync(destPath, newData);
                     } else {
-                        // 从0开始或文件不存在，直接写入
+                        // start=0 或文件不存在：直接写入（覆盖）
                         const buf = await readBody(req, 200 * 1024 * 1024);
                         fs.writeFileSync(destPath, buf);
                     }
                     const size = fs.statSync(destPath).size;
-                    logLine(`simple upload (append): ${filename} (${size} bytes)`);
+                    logLine(`simple upload (append): ${filename} (${size} bytes, range ${start}-${endPos}/${totalSize})`);
                     generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
                     return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
                 }
