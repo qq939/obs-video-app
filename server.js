@@ -985,6 +985,8 @@ const server = http.createServer(async (req, res) => {
                     const start = parseInt(match[1], 10);
                     const endPos = parseInt(match[2], 10);
                     const totalSize = parseInt(match[3], 10);
+                    const chunkSize = endPos - start + 1;
+                    const beginTime = Date.now();
                     
                     // 读取分片数据
                     const chunkData = await readBody(req, 200 * 1024 * 1024);
@@ -1009,8 +1011,11 @@ const server = http.createServer(async (req, res) => {
                     // 在 start 偏移位置写入分片数据
                     fs.writeFileSync(destPath, chunkData, { flag: 'r+', start: start });
                     
+                    const elapsed = Date.now() - beginTime;
+                    const speedKBps = Math.round(chunkSize / elapsed);  // KB/s
                     const size = fs.statSync(destPath).size;
-                    logLine(`upload: ${filename} ${size}/${totalSize} bytes (${start}-${endPos})`);
+                    const pct = Math.round(size / totalSize * 100);
+                    logLine(`upload: ${filename} ${size}/${totalSize} (${pct}%) chunk ${chunkSize}B in ${elapsed}ms (${speedKBps}KB/s)`);
                     
                     // 如果上传完成（endPos === totalSize - 1），验证并生成HLS
                     if (endPos === totalSize - 1) {
