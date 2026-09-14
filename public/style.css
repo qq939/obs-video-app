@@ -79,8 +79,10 @@ html, body {
     word-break: break-all;
     pointer-events: none;
 }
+.video-container .v-label.hidden { display: none; }
+.video-container .v-label { display: none; }  /* 默认隐藏 */
 
-/* Overlay buttons: only show when on settings page */
+/* Overlay buttons: 默认隐藏 */
 .video-overlay-btns {
     position: absolute;
     top: 14px;
@@ -88,9 +90,7 @@ html, body {
     z-index: 7;
     display: flex;
     gap: 8px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity .2s ease;
+    display: none;  /* 默认隐藏 */
 }
 .page[data-page="2"] .video-overlay-btns {
     opacity: 1;
@@ -450,6 +450,7 @@ html, body {
     text-align: center;
     margin-bottom: 8px;
 }
+.seek-label { display: none; }  /* 默认隐藏 */
 .seek-track {
     position: relative;
     height: 24px;
@@ -458,6 +459,7 @@ html, body {
     cursor: pointer;
     padding: 8px 0;
 }
+.seek-track { display: none; }  /* 默认隐藏 */
 .seek-track::before {
     content: '';
     position: absolute;
@@ -505,6 +507,7 @@ html, body {
     z-index: 12;
     pointer-events: none;
 }
+.page-dot { display: none; }  /* 默认隐藏 */
 .page-dot span {
     width: 6px;
     height: 6px;
