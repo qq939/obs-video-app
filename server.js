@@ -987,7 +987,21 @@ const server = http.createServer(async (req, res) => {
                     const endPos = parseInt(match[2], 10);
                     const totalSize = parseInt(match[3], 10);
                     
-                    // 如果 start=0，说明是新上传（覆盖），直接写入
+                    // 如果 start=0，说明是新上传，先删除旧文件和HLS
+                    if (start === 0) {
+                        if (fs.existsSync(destPath)) {
+                            fs.unlinkSync(destPath);
+                            invalidateHls(filename);
+                            logLine(`cleaned old file for new upload: ${filename}`);
+                        }
+                        const buf = await readBody(req, 200 * 1024 * 1024);
+                        fs.writeFileSync(destPath, buf);
+                        const size = fs.statSync(destPath).size;
+                        logLine(`simple upload (new): ${filename} (${size} bytes, range ${start}-${endPos}/${totalSize})`);
+                        generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
+                        return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
+                    }
+                    
                     // 如果 start>0 且文件存在，说明是追加
                     if (start > 0 && fs.existsSync(destPath)) {
                         // 追加：读取现有文件 + 追加数据
@@ -995,15 +1009,22 @@ const server = http.createServer(async (req, res) => {
                         const appendData = await readBody(req, 200 * 1024 * 1024);
                         const newData = Buffer.concat([existing, appendData]);
                         fs.writeFileSync(destPath, newData);
-                    } else {
-                        // start=0 或文件不存在：直接写入（覆盖）
+                        const size = fs.statSync(destPath).size;
+                        logLine(`simple upload (append): ${filename} (${size} bytes, range ${start}-${endPos}/${totalSize})`);
+                        generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
+                        return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
+                    }
+                    
+                    // 文件不存在但 start>0？异常情况，删除并重新开始
+                    if (start > 0) {
+                        logLine(`warn: gap in upload, starting over: ${filename}`);
                         const buf = await readBody(req, 200 * 1024 * 1024);
                         fs.writeFileSync(destPath, buf);
+                        const size = fs.statSync(destPath).size;
+                        logLine(`simple upload (restart): ${filename} (${size} bytes, range ${start}-${endPos}/${totalSize})`);
+                        generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
+                        return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
                     }
-                    const size = fs.statSync(destPath).size;
-                    logLine(`simple upload (append): ${filename} (${size} bytes, range ${start}-${endPos}/${totalSize})`);
-                    generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
-                    return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
                 }
             }
             
