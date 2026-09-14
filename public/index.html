@@ -64,8 +64,8 @@
                         </div>
 
                         <div class="seek-section">
-                            <div class="seek-label" id="seekLabel">0:00 / 0:00</div>
-                            <div class="seek-track" id="seekTrack">
+                            <div class="seek-label hidden" id="seekLabel">0:00 / 0:00</div>
+                            <div class="seek-track hidden" id="seekTrack">
                                 <div class="seek-fill" id="seekFill"></div>
                                 <div class="seek-thumb" id="seekThumb"></div>
                             </div>
@@ -77,12 +77,12 @@
         </div>
 
         <!-- Single shared video player: fixed overlay, always on top -->
-        <div id="playerLayer">
+        <div id="playerLayer" class="hidden">
             <div class="video-container" id="videoContainer">
-                <div class="v-label" id="videoLabel"></div>
-                <div class="video-overlay-btns" id="videoOverlayBtns">
-                    <button class="v-compress" id="overlayCompress">压缩</button>
-                    <button class="v-delete" id="overlayDelete">删除</button>
+                <div class="v-label hidden" id="videoLabel"></div>
+                <div class="video-overlay-btns hidden" id="videoOverlayBtns">
+                    <button class="v-compress hidden" id="overlayCompress">压缩</button>
+                    <button class="v-delete hidden" id="overlayDelete">删除</button>
                 </div>
             </div>
         </div>
