@@ -1309,6 +1309,10 @@
     });
 
     // ---------------------------------------------------------------- upload
+    // 上传队列：支持多文件串行上传
+    let uploadQueue = [];
+    let uploadCurrent = null;
+
     // 计算文件哈希：小文件用 crypto.subtle（快），大文件用手动实现（省内存）
     async function computeFileHash(file, onProgress) {
         const SMALL_FILE_THRESHOLD = 50 * 1024 * 1024;  // 50MB 以下用 subtle
@@ -1336,14 +1340,12 @@
         return ctx.digestHex();
     }
 
-    async function uploadFile(file) {
-        if (currentAbort) { currentAbort.abort(); currentAbort = null; }
-        currentAbort = new AbortController();
-        progressArea.classList.remove('hidden');
-        progressTitle.textContent = file.name;
-        progressFill.style.width = '0%'; progressText.textContent = '0%';
+    async function uploadOneFile(file) {
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         let hash = '', pct = 0;
+
+        progressTitle.textContent = file.name;
+        progressFill.style.width = '0%'; progressText.textContent = '0%';
 
         try {
             progressText.textContent = '计算文件哈希…';
@@ -1359,7 +1361,7 @@
             });
             if (init.skip) {
                 progressFill.style.width='100%'; progressText.textContent='100%  秒传成功！';
-                await sleep(800); uploadModal.classList.add('hidden'); await loadFeed(); return;
+                await sleep(800); return;
             }
             const { uploadId, uploaded = [] } = init;
             const remaining = [];
@@ -1376,11 +1378,41 @@
             progressText.textContent='完成中…'; progressFill.style.width='98%';
             await jsonFetch('/upload/complete/' + uploadId, {method:'POST', signal:currentAbort.signal});
             progressFill.style.width='100%'; progressText.textContent='完成！';
-            await sleep(500); uploadModal.classList.add('hidden'); await loadFeed();
+            await sleep(500);
         } catch (err) {
             if (err.name === 'AbortError') progressText.textContent = '已取消';
             else { progressText.textContent = '失败: ' + err.message; alert('上传失败：' + err.message); }
-        } finally { currentAbort = null; }
+            throw err;
+        }
+    }
+
+    async function processUploadQueue() {
+        if (uploadCurrent || uploadQueue.length === 0) return;
+        uploadCurrent = uploadQueue.shift();
+        progressArea.classList.remove('hidden');
+        try {
+            await uploadOneFile(uploadCurrent);
+        } catch (err) {
+            // 错误已在 uploadOneFile 中处理
+        }
+        uploadCurrent = null;
+        if (uploadQueue.length > 0) {
+            // 继续下一个
+            progressText.textContent = '下一个文件…';
+            await sleep(300);
+            await processUploadQueue();
+        } else {
+            uploadModal.classList.add('hidden');
+            await loadFeed();
+        }
+    }
+
+    function queueFiles(files) {
+        for (const f of files) {
+            if (!f.type.startsWith('video/')) continue;
+            uploadQueue.push(f);
+        }
+        if (!uploadCurrent) processUploadQueue();
     }
 
     async function compressVideo(file, onProgress) {
@@ -1407,7 +1439,12 @@
         });
     }
 
-    cancelBtn.addEventListener('click', () => { if (currentAbort) { currentAbort.abort(); currentAbort = null; } uploadModal.classList.add('hidden'); });
+    cancelBtn.addEventListener('click', () => {
+        if (currentAbort) { currentAbort.abort(); currentAbort = null; }
+        uploadQueue = [];
+        uploadCurrent = null;
+        uploadModal.classList.add('hidden');
+    });
     // Floating upload button (right edge) — open upload modal without long-press
     if (fabUpload) {
         let fabDown = false;
@@ -1423,8 +1460,17 @@
     dropZone.addEventListener('click', () => fileInput.click());
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
-    dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); const f = e.dataTransfer.files[0]; if (f) handleUploadFile(f); });
-    fileInput.addEventListener('change', () => { const f = fileInput.files[0]; if (f) handleUploadFile(f); fileInput.value = ''; });
+    dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); queueFiles(e.dataTransfer.files); });
+    fileInput.addEventListener('change', () => { queueFiles(fileInput.files); fileInput.value = ''; });
+
+    // 单文件上传（保留兼容性，用于压缩后上传）
+    async function uploadFile(file) {
+        if (currentAbort) { currentAbort.abort(); currentAbort = null; }
+        currentAbort = new AbortController();
+        progressArea.classList.remove('hidden');
+        await uploadOneFile(file);
+        currentAbort = null;
+    }
 
     async function handleUploadFile(file) {
         const cb = document.getElementById('compressBeforeUpload').checked;
@@ -1434,9 +1480,9 @@
                 progressFill.style.width='0%'; progressText.textContent='0%';
                 const c = await compressVideo(file, p => { progressText.textContent='压缩中 '+p+'%'; progressFill.style.width=Math.round(p*0.7)+'%'; });
                 progressText.textContent='压缩完成，上传中…'; progressFill.style.width='70%';
-                await uploadFile(c);
-            } catch (err) { alert('压缩失败：'+err.message+'\n改用直接上传。'); await uploadFile(file); }
-        } else { await uploadFile(file); }
+                await uploadOneFile(c);
+            } catch (err) { alert('压缩失败：'+err.message+'\n改用直接上传。'); await uploadOneFile(file); }
+        } else { await uploadOneFile(file); }
     }
 
     // Settings switches
