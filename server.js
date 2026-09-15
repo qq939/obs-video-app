@@ -41,6 +41,13 @@ const HLS_GEN_VERSION = 4;
 const HLS_SEGMENT_BYTES = 4 * 1024 * 1024;
 
 const VIDEO_EXTS = new Set(['.mp4', '.webm', '.ogv', '.mov', '.m4v', '.mkv']);
+
+// 判断是否为视频文件
+function isVideoFile(filename) {
+    const ext = path.extname(filename).toLowerCase();
+    return VIDEO_EXTS.has(ext);
+}
+
 const MIME = {
     '.mp4': 'video/mp4',
     '.webm': 'video/webm',
@@ -594,6 +601,51 @@ async function completeUpload(uploadId) {
 
     fs.rmSync(dir, { recursive: true, force: true });
     logLine(`upload complete: ${meta.filename} (${meta.size} bytes)`);
+
+    // 方案A：对视频文件生成HLS（分片直接作为.ts）
+    const isVideo = isVideoFile(meta.filename);
+    if (isVideo) {
+        const hlsDir = path.join(HLS_DIR, meta.filename);
+        if (!fs.existsSync(hlsDir)) fs.mkdirSync(hlsDir, { recursive: true });
+
+        const chunkSize = meta.chunkSize;
+        for (let i = 0; i < meta.totalChunks; i++) {
+            const dstPath = path.join(hlsDir, `${i}.ts`);
+            const start = i * chunkSize;
+            const end = Math.min(start + chunkSize, meta.size);
+            const rs = fs.createReadStream(destPath, { start, end });
+            const ws = fs.createWriteStream(dstPath);
+            await new Promise((resolve, reject) => {
+                rs.pipe(ws);
+                rs.on('end', resolve);
+                rs.on('error', reject);
+                ws.on('error', reject);
+            });
+        }
+
+        // 生成m3u8
+        const m3u8Path = path.join(hlsDir, 'index.m3u8');
+        const targetDuration = Math.max(10, Math.ceil(chunkSize / (1024 * 1024) * 8));
+        let m3u8 = '#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:' + targetDuration + '\n#EXT-X-MEDIA-SEQUENCE:0\n';
+        for (let i = 0; i < meta.totalChunks; i++) {
+            m3u8 += '#EXTINF:10.0,\n' + i + '.ts\n';
+        }
+        m3u8 += '#EXT-X-ENDLIST\n';
+        fs.writeFileSync(m3u8Path, m3u8);
+
+        // 写入meta.json
+        fs.writeFileSync(path.join(hlsDir, 'meta.json'), JSON.stringify({
+            version: HLS_GEN_VERSION,
+            size: meta.size,
+            chunkSize: chunkSize,
+            totalChunks: meta.totalChunks,
+            source: 'upload_chunk_direct'
+        }, null, 2));
+
+        logLine(`HLS generated for ${meta.filename}: ${meta.totalChunks} chunks`);
+        return { ok: true, url: `/hls/${encodeURIComponent(meta.filename)}/index.m3u8` };
+    }
+
     return { ok: true, url: `/obs/${encodeURIComponent(meta.filename)}` };
 }
 

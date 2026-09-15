@@ -857,8 +857,8 @@
     }
 
     // ---------------------------------------------------------------- gestures
-    // 横向翻页阈值：相对视口 35%（最小 240px），视口 1280 时 = 448，避免左右滑动误翻页
-    const SWIPE_THRESHOLD = Math.max(240, Math.round(window.innerWidth * 0.35));
+    // 横向翻页阈值：相对视口 17.5%（最小 120px），视口 1280 时 = 224
+    const SWIPE_THRESHOLD = Math.max(120, Math.round(window.innerWidth * 0.175));
     const DRAG_START = 12;          // 横向拖拽起步距离
     const AXIS_LOCK_DIST = 18;      // 位移超过该值后锁定主轴（斜向滑动防误判）
     const EDGE_ZONE = 60;
@@ -1344,6 +1344,7 @@
         const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
         let hash = '', pct = 0;
 
+        progressArea.classList.remove('hidden');
         progressTitle.textContent = file.name;
         progressFill.style.width = '0%'; progressText.textContent = '0%';
 
