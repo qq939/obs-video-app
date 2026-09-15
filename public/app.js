@@ -857,8 +857,8 @@
     }
 
     // ---------------------------------------------------------------- gestures
-    // 横向翻页阈值：相对视口 17.5%（最小 120px），视口 1280 时 = 224
-    const SWIPE_THRESHOLD = Math.max(120, Math.round(window.innerWidth * 0.175));
+    // 横向翻页阈值：相对视口 8.75%（最小 60px），视口 1280 时 = 112
+    const SWIPE_THRESHOLD = Math.max(60, Math.round(window.innerWidth * 0.0875));
     const DRAG_START = 12;          // 横向拖拽起步距离
     const AXIS_LOCK_DIST = 18;      // 位移超过该值后锁定主轴（斜向滑动防误判）
     const EDGE_ZONE = 60;
@@ -1232,6 +1232,9 @@
             video.currentTime = video._pendingSeek;
         }
         video._pendingSeek = undefined;
+        // 显示进度条
+        seekTrack && seekTrack.classList.remove('hidden');
+        seekLabel && seekLabel.classList.remove('hidden');
     });
 
     // 缓冲完成后自动播放（playing=true 时才触发）
