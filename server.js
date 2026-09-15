@@ -265,6 +265,11 @@ function detectCodecs(filePath) {
     });
 }
 
+// 简单验证文件是否可播放（只检查能否被 ffprobe 解析）
+async function probeFile(filePath) {
+    return detectCodecs(filePath);
+}
+
 /**
  * Read container duration in seconds (for the /videos API).
  * Primary: sum EXTINF from the HLS playlist we already generated (no external deps).
@@ -1021,11 +1026,23 @@ const server = http.createServer(async (req, res) => {
                     if (endPos === totalSize - 1) {
                         logLine(`upload complete: ${filename} (${size} bytes)`);
                         // 验证文件大小
-                        if (size === totalSize) {
-                            generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
-                        } else {
-                            logLine(`upload size mismatch: expected ${totalSize}, got ${size}`);
+                        if (size !== totalSize) {
+                            logLine(`upload size mismatch: expected ${totalSize}, got ${size}, deleting...`);
+                            fs.unlinkSync(destPath);
+                            invalidateHls(filename);
+                            return sendJson(res, 400, { error: '文件大小不匹配' });
                         }
+                        // 验证文件内容（用 ffprobe 快速检查）
+                        try {
+                            await probeFile(destPath);
+                            logLine(`upload verify ok: ${filename}`);
+                        } catch (e) {
+                            logLine(`upload verify failed: ${filename} - ${e.message}, deleting...`);
+                            fs.unlinkSync(destPath);
+                            invalidateHls(filename);
+                            return sendJson(res, 400, { error: '文件损坏，无法播放' });
+                        }
+                        generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
                     }
                     
                     return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}`, uploaded: endPos + 1, total: totalSize });
@@ -1044,6 +1061,16 @@ const server = http.createServer(async (req, res) => {
             fs.renameSync(tmpPath, destPath);
             const size = fs.statSync(destPath).size;
             logLine(`simple upload: ${filename} (${size} bytes)`);
+            // 验证文件内容
+            try {
+                await probeFile(destPath);
+                logLine(`simple upload verify ok: ${filename}`);
+            } catch (e) {
+                logLine(`simple upload verify failed: ${filename} - ${e.message}, deleting...`);
+                fs.unlinkSync(destPath);
+                invalidateHls(filename);
+                return sendJson(res, 400, { error: '文件损坏，无法播放' });
+            }
             generateHls(filename).catch((e) => logLine('hls bg gen failed:', e.message));
             return sendJson(res, 200, { ok: true, url: `/obs/${encodeURIComponent(filename)}` });
         }
